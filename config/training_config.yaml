@@ -1,0 +1,337 @@
+# IBVAP Training Configuration
+# Master configuration for all model training
+
+# ============================================================
+# Global Settings
+# ============================================================
+global:
+  seed: 42
+  device: "cuda"  # cuda, cpu, mps
+  output_dir: "outputs"
+  log_dir: "logs"
+  checkpoint_dir: "checkpoints"
+
+# ============================================================
+# Dataset Configuration
+# ============================================================
+datasets:
+  # Detection datasets
+  detection:
+    - name: "idd"
+      root_dir: "data/idd"
+      split: "train"
+      input_size: [640, 640]
+      batch_size: 16
+      num_workers: 4
+      
+    - name: "bdd100k"
+      root_dir: "data/bdd100k"
+      split: "train"
+      input_size: [640, 640]
+      batch_size: 8
+      num_workers: 4
+  
+  # ANPR datasets
+  anpr:
+    - name: "indian_number_plates"
+      root_dir: "data/indian_number_plates"
+      split: "train"
+      input_size: [640, 640]
+      batch_size: 32
+      num_workers: 4
+      
+    - name: "ufpr_alpr"
+      root_dir: "data/ufpr_alpr"
+      split: "train"
+      input_size: [640, 640]
+      batch_size: 32
+      num_workers: 4
+  
+  # Surveillance datasets
+  surveillance:
+    - name: "virat"
+      root_dir: "data/virat"
+      split: "train"
+      clip_length: 32
+      stride: 16
+      input_size: [640, 640]
+      batch_size: 4
+      num_workers: 4
+      
+    - name: "ucf_crime"
+      root_dir: "data/ucf_crime"
+      split: "train"
+      clip_length: 32
+      stride: 16
+      input_size: [640, 640]
+      batch_size: 4
+      num_workers: 4
+  
+  # Low-light datasets
+  low_light:
+    - name: "exdark"
+      root_dir: "data/exdark"
+      split: "train"
+      input_size: [640, 640]
+      batch_size: 32
+      num_workers: 4
+  
+  # Face detection datasets
+  face_detection:
+    - name: "wider_face"
+      root_dir: "data/wider_face"
+      split: "train"
+      input_size: [640, 640]
+      batch_size: 32
+      num_workers: 4
+
+# ============================================================
+# Model Configurations
+# ============================================================
+models:
+  # Object Detection Model (YOLOv8)
+  detection:
+    name: "yolov8n"
+    pretrained: true
+    num_classes: 34  # IDD classes
+    input_size: [640, 640]
+    confidence_threshold: 0.5
+    iou_threshold: 0.45
+    
+    # Training settings
+    epochs: 100
+    learning_rate: 0.001
+    weight_decay: 0.0005
+    warmup_epochs: 5
+    lr_scheduler: "cosine"
+    
+    # Augmentation
+    augmentation:
+      horizontal_flip: 0.5
+      vertical_flip: 0.1
+      rotation: 15
+      scale: [0.8, 1.2]
+      mosaic: 1.0
+      mixup: 0.1
+  
+  # ANPR Model
+  anpr:
+    name: "paddleocr"
+    det_model: "ch_PP-OCRv3_det"
+    rec_model: "ch_PP-OCRv3_rec"
+    use_gpu: true
+    
+    # Training settings
+    epochs: 50
+    learning_rate: 0.001
+    batch_size: 64
+    
+    # Multi-frame consensus
+    consensus_threshold: 0.6
+    min_frames: 3
+  
+  # Tracking Model (ByteTrack)
+  tracking:
+    name: "bytetrack"
+    track_thresh: 0.5
+    match_thresh: 0.8
+    track_buffer: 30
+    min_box_area: 10
+    mot20: false
+    
+    # Re-identification
+    reid_model: "osnet_x1_0"
+    reid_weights: "models/osnet_x1_0_market1501.pth"
+    
+    # Kalman filter
+    kalman_format: "center"
+    delta_t: 3
+  
+  # Surveillance Activity Recognition
+  surveillance:
+    name: "slowfast"
+    backbone: "resnet50"
+    alpha: 4  # Slow pathway sampling rate
+    beta: 8   # Fast pathway sampling rate
+    num_frames: 32
+    num_classes: 13  # UCF-Crime classes
+    
+    # Training settings
+    epochs: 100
+    learning_rate: 0.01
+    batch_size: 8
+    warmup_epochs: 10
+  
+  # Low-Light Enhancement
+  low_light:
+    name: "zero_dce"
+    input_size: [640, 640]
+    
+    # Training settings
+    epochs: 200
+    learning_rate: 0.001
+    batch_size: 16
+    
+    # Loss weights
+    exposure_loss_weight: 10
+    color_constancy_loss_weight: 5
+    smoothness_loss_weight: 1600
+   TV_loss_weight: 1600
+  
+  # Face Detection
+  face_detection:
+    name: "retinaface"
+    backbone: "resnet50"
+    input_size: [640, 640]
+    
+    # Training settings
+    epochs: 100
+    learning_rate: 0.001
+    batch_size: 32
+    
+    # NMS settings
+    nms_threshold: 0.4
+    confidence_threshold: 0.5
+
+# ============================================================
+# Training Strategies
+# ============================================================
+strategies:
+  # Transfer learning
+  transfer_learning:
+    enabled: true
+    freeze_backbone_epochs: 10
+    freeze_bn: true
+  
+  # Mixed precision training
+  mixed_precision:
+    enabled: true
+    dtype: "fp16"  # fp16 or bf16
+  
+  # Gradient accumulation
+  gradient_accumulation:
+    enabled: false
+    steps: 4
+  
+  # EMA (Exponential Moving Average)
+  ema:
+    enabled: true
+    decay: 0.9999
+  
+  # Distributed training
+  distributed:
+    enabled: false
+    backend: "nccl"
+    world_size: 1
+
+# ============================================================
+# Optimization
+# ============================================================
+optimizer:
+  name: "adamw"
+  lr: 0.001
+  weight_decay: 0.0005
+  betas: [0.9, 0.999]
+  eps: 1e-8
+
+scheduler:
+  name: "cosine"
+  T_max: 100
+  eta_min: 0.00001
+  warmup_epochs: 5
+
+# ============================================================
+# Loss Functions
+# ============================================================
+losses:
+  detection:
+    box_loss: "CIoU"
+    cls_loss: "CrossEntropy"
+    obj_loss: "BCE"
+    weights: [1.0, 0.5, 0.5]
+  
+  anpr:
+    recognition_loss: "CTC"
+    
+  surveillance:
+    classification_loss: "CrossEntropy"
+    focal_loss_gamma: 2.0
+    focal_loss_alpha: 0.25
+
+# ============================================================
+# Evaluation
+# ============================================================
+evaluation:
+  metrics:
+    detection:
+      - "mAP@0.5"
+      - "mAP@0.5:0.95"
+      - "precision"
+      - "recall"
+      - "f1_score"
+    
+    anpr:
+      - "accuracy"
+      - "edit_distance"
+      - "precision"
+      - "recall"
+    
+    surveillance:
+      - "accuracy"
+      - "f1_score"
+      - "auc_roc"
+  
+  # Validation frequency
+  val_every_n_epochs: 5
+  
+  # Early stopping
+  early_stopping:
+    enabled: true
+    patience: 15
+    min_delta: 0.001
+    mode: "max"  # max for mAP, min for loss
+
+# ============================================================
+# Logging
+# ============================================================
+logging:
+  # Console logging
+  console:
+    enabled: true
+    interval: 100  # Log every N iterations
+  
+  # TensorBoard
+  tensorboard:
+    enabled: true
+    log_dir: "logs/tensorboard"
+  
+  # Weights & Biases
+  wandb:
+    enabled: false
+    project: "ibvap"
+    entity: "sih2026"
+
+# ============================================================
+# Checkpointing
+# ============================================================
+checkpointing:
+  save_every_n_epochs: 10
+  save_best_only: true
+  best_metric: "mAP@0.5"
+  max_checkpoints: 5
+
+# ============================================================
+# Hardware
+# ============================================================
+hardware:
+  # GPU settings
+  gpu:
+    memory_fraction: 0.9
+    allow_growth: true
+  
+  # DataLoader settings
+  dataloader:
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2

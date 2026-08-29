@@ -1,0 +1,152 @@
+# IBVAP .gitignore
+
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+.env
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# ============================================================
+# Node.js (Dashboard)
+# ============================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+.next/
+out/
+
+# ============================================================
+# IDEs
+# ============================================================
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ============================================================
+# OS
+# ============================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ============================================================
+# Project Specific
+# ============================================================
+
+# Data (large files - don't commit)
+data/
+datasets/
+models/pretrained/
+models/checkpoints/
+
+# Outputs
+outputs/
+logs/
+runs/
+wandb/
+
+# Demo recordings
+demo_videos/
+demo_recordings/
+final_videos/
+recordings/
+
+# Configuration files with secrets
+.env
+.env.local
+.env.production
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+
+# Docker
+docker-compose.override.yml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# ============================================================
+# ML/DL Specific
+# ============================================================
+*.ckpt
+*.pth
+*.pt
+*.onnx
+*.engine
+*.trt
+*.weights
+*.h5
+*.hdf5
+
+# Training artifacts
+checkpoints/
+wandb/
+mlruns/
