@@ -1,3 +1,23 @@
-streamlit>=1.28.0
-opencv-python-headless>=4.8.0
+# IBVAP - Intelligent Border Video Analytics Platform
+# Core
 numpy>=1.24.0
+opencv-python-headless>=4.8.0
+
+# ML / Detection
+ultralytics>=8.0.0
+torch>=2.0.0
+torchvision>=0.15.0
+
+# OCR / ANPR
+easyocr>=1.7.0
+
+# Backend
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# Dashboard
+streamlit>=1.28.0
+
+# Utilities
+pyyaml>=6.0

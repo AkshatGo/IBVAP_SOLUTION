@@ -1,135 +1,24 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  # ============================================================
-  # Backend API
-  # ============================================================
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-    container_name: ibvap-backend
+  dashboard:
+    build: .
+    command: python main.py dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    environment:
+      - IBVAP_MODE=dashboard
+
+  api:
+    build: .
+    command: python main.py server --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
     environment:
-      - DATABASE_URL=postgresql://ibvap:ibvap_secret@postgres:5432/ibvap_db
-      - REDIS_URL=redis://redis:6379/0
-      - MQTT_BROKER=mqtt://mqtt:1883
-      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
-    volumes:
-      - ./src/backend:/app/src
-      - ./config:/app/config
-    depends_on:
-      - postgres
-      - redis
-      - mqtt
-    networks:
-      - ibvap-network
-    restart: unless-stopped
-
-  # ============================================================
-  # Frontend Dashboard
-  # ============================================================
-  dashboard:
-    build:
-      context: ./src/dashboard
-      dockerfile: Dockerfile
-    container_name: ibvap-dashboard
-    ports:
-      - "3000:80"
-    depends_on:
-      - backend
-    networks:
-      - ibvap-network
-    restart: unless-stopped
-
-  # ============================================================
-  # PostgreSQL Database
-  # ============================================================
-  postgres:
-    image: postgres:16-alpine
-    container_name: ibvap-postgres
-    environment:
-      - POSTGRES_DB=ibvap_db
-      - POSTGRES_USER=ibvap
-      - POSTGRES_PASSWORD=ibvap_secret
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
-    networks:
-      - ibvap-network
-    restart: unless-stopped
-
-  # ============================================================
-  # Redis Cache
-  # ============================================================
-  redis:
-    image: redis:7-alpine
-    container_name: ibvap-redis
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-    networks:
-      - ibvap-network
-    restart: unless-stopped
-
-  # ============================================================
-  # MQTT Broker (for C2 integration)
-  # ============================================================
-  mqtt:
-    image: eclipse-mosquitto:2
-    container_name: ibvap-mqtt
-    ports:
-      - "1883:1883"
-      - "9001:9001"
-    volumes:
-      - ./config/mosquitto.conf:/mosquitto/config/mosquitto.conf
-      - mqtt_data:/mosquitto/data
-      - mqtt_log:/mosquitto/log
-    networks:
-      - ibvap-network
-    restart: unless-stopped
-
-  # ============================================================
-  # Edge Node (for testing)
-  # ============================================================
-  edge:
-    build:
-      context: .
-      dockerfile: Dockerfile.edge
-    container_name: ibvap-edge
-    environment:
-      - BACKEND_URL=http://backend:8000
-      - MQTT_BROKER=mqtt://mqtt:1883
-      - CAMERA_SOURCE=0
-      - DETECTION_INTERVAL=0.033
-    volumes:
-      - ./src/edge:/app/src
-      - ./models:/app/models
-    depends_on:
-      - backend
-      - mqtt
-    networks:
-      - ibvap-network
-    restart: unless-stopped
-    # Uncomment for GPU support
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
-
-volumes:
-  postgres_data:
-  redis_data:
-  mqtt_data:
-  mqtt_log:
-
-networks:
-  ibvap-network:
-    driver: bridge
+      - IBVAP_MODE=server

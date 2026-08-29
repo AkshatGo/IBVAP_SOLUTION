@@ -1,26 +1,64 @@
 """
-IBVAP Web Demo - Intelligent Border Video Analytics Platform
-Works without heavy ML libraries - uses OpenCV HOG + simulated vehicle detection
+IBVAP — Intelligent Border Video Analytics Platform
+Full working dashboard with YOLOv8 detection, virtual fence, ANPR, hash chain verification.
 """
-
 import streamlit as st
 import cv2
 import numpy as np
 import time
 import json
 import hashlib
+import tempfile
 from datetime import datetime
+from pathlib import Path
+import sys
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
 
 st.set_page_config(page_title="IBVAP", page_icon="🛡️", layout="wide")
 
-# ── Load HOG person detector ──
+# ═══════════════════════════════════════════════════
+# LOAD MODELS
+# ═══════════════════════════════════════════════════
+
+@st.cache_resource
+def load_yolo():
+    """Load YOLOv8 model."""
+    from ultralytics import YOLO
+    return YOLO("yolov8n.pt")
+
 @st.cache_resource
 def load_hog():
+    """Load OpenCV HOG person detector as fallback."""
     hog = cv2.HOGDescriptor()
     hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
     return hog
 
-# ── Session state ──
+@st.cache_resource
+def load_ocr():
+    """Load EasyOCR for ANPR."""
+    try:
+        import easyocr
+        return easyocr.Reader(["en"], gpu=False)
+    except Exception:
+        return None
+
+# Try to load YOLO, fallback to HOG
+USE_YOLO = False
+try:
+    model = load_yolo()
+    USE_YOLO = True
+except Exception:
+    model = None
+    hog = load_hog()
+
+ocr_reader = load_ocr()
+
+# ═══════════════════════════════════════════════════
+# SESSION STATE
+# ═══════════════════════════════════════════════════
+
 if "alerts" not in st.session_state:
     st.session_state.alerts = []
 if "prev_hash" not in st.session_state:
@@ -28,185 +66,299 @@ if "prev_hash" not in st.session_state:
 if "frame_count" not in st.session_state:
     st.session_state.frame_count = 0
 if "camera_status" not in st.session_state:
-    st.session_state.camera_status = {"CAM-01": True, "CAM-02": True, "CAM-03": True}
+    st.session_state.camera_status = {
+        "CAM-01": True, "CAM-02": True, "CAM-03": True
+    }
+if "plate_cache" not in st.session_state:
+    st.session_state.plate_cache = {}
 
-# ── Virtual fence polygon (relative to 640x480 frame) ──
+# ═══════════════════════════════════════════════════
+# CONFIG
+# ═══════════════════════════════════════════════════
+
 W, H = 640, 480
 FENCE = np.array([[180, 120], [460, 120], [460, 380], [180, 380]], np.int32)
 
-# ── Helpers ──
-def create_alert(event_type, explanation, severity, track_id=0):
+TARGET_CLASSES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+VEHICLE_CLASSES = {2, 3, 5, 7}
+
+INDIAN_PLATE_PATTERN = (
+    r"(?:^[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{4}$)"
+)
+
+# ═══════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════
+
+def create_alert(event_type, explanation, severity, payload=None):
+    """Create alert with hash chain."""
     alert = {
-        "event_id": f"e{len(st.session_state.alerts)+1:04d}",
+        "event_id": f"e{uuid4_hex()}",
         "prev_hash": st.session_state.prev_hash,
         "timestamp": datetime.now().isoformat(),
         "site_id": "BOP-01",
         "camera_id": "CAM-01",
         "event_type": event_type,
-        "track_id": f"T-{track_id:04d}",
         "severity": severity,
         "confidence": round(np.random.uniform(0.82, 0.97), 2),
         "explanation": explanation,
+        "payload": payload or {},
     }
-    # Hash chain
-    payload = {k: v for k, v in alert.items() if k != "prev_hash"}
+    # Compute hash
+    payload_for_hash = {k: v for k, v in alert.items() if k not in ("prev_hash", "hash")}
+    h = hashlib.sha256(json.dumps(payload_for_hash, sort_keys=True, default=str).encode()).hexdigest()
+    alert["hash"] = h
     alert["prev_hash"] = st.session_state.prev_hash
-    h = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     st.session_state.prev_hash = h
     st.session_state.alerts.append(alert)
     return alert
 
 
+def uuid4_hex():
+    """Generate a random hex string (no uuid import needed)."""
+    import random
+    return ''.join(random.choices('0123456789abcdef', k=16))
+
+
 def verify_chain():
-    for i in range(1, len(st.session_state.alerts)):
-        prev = st.session_state.alerts[i - 1].copy()
-        prev_hash_val = prev.pop("prev_hash", None)
-        h = hashlib.sha256(json.dumps(prev, sort_keys=True).encode()).hexdigest()
-        if h != st.session_state.alerts[i]["prev_hash"]:
+    """Verify hash chain integrity."""
+    chain = st.session_state.alerts
+    if len(chain) < 2:
+        return True
+    for i in range(1, len(chain)):
+        prev = chain[i - 1].copy()
+        prev.pop("hash", None)
+        expected = hashlib.sha256(
+            json.dumps(prev, sort_keys=True, default=str).encode()
+        ).hexdigest()
+        if chain[i].get("prev_hash") != chain[i - 1].get("hash"):
             return False
     return True
 
 
-def detect_vehicles_by_color(frame):
-    """Simple color-based vehicle detection (blue/red cars)."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    vehicles = []
-    # Blue cars
-    mask = cv2.inRange(hsv, np.array([100, 80, 80]), np.array([130, 255, 255]))
-    # Red cars
-    mask2 = cv2.inRange(hsv, np.array([0, 100, 100]), np.array([10, 255, 255]))
-    mask3 = cv2.inRange(hsv, np.array([170, 100, 100]), np.array([180, 255, 255]))
-    mask = mask | mask2 | mask3
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    for c in contours:
-        area = cv2.contourArea(c)
-        if 2000 < area < 30000:
-            x, y, w, h = cv2.boundingRect(c)
-            aspect = w / max(h, 1)
-            if 0.8 < aspect < 4.0:
-                vehicles.append((x, y, x + w, y + h))
-    return vehicles
+def is_in_fence(point):
+    """Check if a point is inside the virtual fence."""
+    return cv2.pointPolygonTest(FENCE, (float(point[0]), float(point[1])), False) >= 0
 
 
-def process_frame(frame, hog):
-    """Run person + vehicle detection on a frame."""
+def detect_frame(frame):
+    """Run detection on a frame. Returns annotated frame + detections."""
     frame = cv2.resize(frame, (W, H))
     detections = []
 
-    # ── Person detection (HOG) ──
-    boxes, weights = hog.detectMultiScale(frame, winStride=(8, 8), padding=(4, 4), scale=1.03)
-    for (x, y, w, h), conf in zip(boxes, weights):
-        cx, cy = x + w // 2, y + h // 2
-        in_fence = cv2.pointPolygonTest(FENCE, (float(cx), float(cy)), False) >= 0
-        color = (0, 0, 255) if in_fence else (0, 255, 255)
-        cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
-        label = f"Person {conf[0]:.0%}"
-        cv2.putText(frame, label, (x, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
-        detections.append({"class": "person", "in_fence": in_fence, "conf": float(conf[0])})
-        if in_fence:
-            create_alert(
-                "fence_intrusion",
-                f"Person detected crossing virtual fence Zone-1. Confidence {conf[0]:.0%}.",
-                "high",
-            )
+    if USE_YOLO and model is not None:
+        results = model(frame, conf=0.45, verbose=False)
+        for r in results:
+            if r.boxes is None:
+                continue
+            for box in r.boxes:
+                cls = int(box.cls[0])
+                if cls not in TARGET_CLASSES:
+                    continue
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
+                in_fence = is_in_fence((cx, cy))
+                cls_name = TARGET_CLASSES[cls]
+                detections.append({
+                    "class": cls_name, "class_id": cls,
+                    "confidence": conf, "bbox": (x1, y1, x2, y2),
+                    "center": (cx, cy), "in_fence": in_fence,
+                })
+    else:
+        # HOG fallback
+        boxes, weights = hog.detectMultiScale(frame, winStride=(8, 8),
+                                               padding=(4, 4), scale=1.05)
+        for (x, y, w, h), conf in zip(boxes, weights):
+            cx, cy = x + w // 2, y + h // 2
+            in_fence = is_in_fence((cx, cy))
+            detections.append({
+                "class": "person", "class_id": 0,
+                "confidence": float(conf[0]),
+                "bbox": (x, y, x + w, y + h),
+                "center": (cx, cy), "in_fence": in_fence,
+            })
 
-    # ── Vehicle detection (color-based) ──
-    vboxes = detect_vehicles_by_color(frame)
-    for (x1, y1, x2, y2) in vboxes:
-        cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 165, 0), 2)
-        cv2.putText(frame, "Vehicle", (x1, y1 - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 165, 0), 1)
-        detections.append({"class": "vehicle", "in_fence": False, "conf": 0.80})
+    # Draw
+    vis = frame.copy()
+    cv2.polylines(vis, [FENCE], True, (0, 255, 0), 2)
+    cv2.putText(vis, "VIRTUAL FENCE", (210, 112),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-    # ── Draw fence ──
-    cv2.polylines(frame, [FENCE], True, (0, 255, 0), 2)
-    cv2.putText(frame, "VIRTUAL FENCE", (210, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    persons = 0
+    vehicles = 0
+    for det in detections:
+        x1, y1, x2, y2 = det["bbox"]
+        color = (0, 0, 255) if det["in_fence"] else (0, 255, 255)
+        cv2.rectangle(vis, (x1, y1), (x2, y2), color, 2)
+        label = f"{det['class']} {det['confidence']:.0%}"
+        cv2.putText(vis, label, (x1, y1 - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
-    return frame, detections
+        if det["class"] == "person":
+            persons += 1
+            if det["in_fence"]:
+                create_alert(
+                    "fence_intrusion",
+                    f"Person detected crossing virtual fence. Confidence: {det['confidence']:.0%}.",
+                    "high",
+                )
+        elif det["class_id"] in VEHICLE_CLASSES:
+            vehicles += 1
+
+    # HUD
+    cv2.rectangle(vis, (0, 0), (W, 28), (20, 20, 30), -1)
+    cv2.putText(vis, f"IBVAP | BOP-01 CAM-01 | Frame {st.session_state.frame_count} | "
+                f"Persons: {persons} | Vehicles: {vehicles}",
+                (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 255), 1)
+
+    return vis, detections
+
+
+def run_ocr_on_frame(frame):
+    """Run OCR on frame for plate detection."""
+    if ocr_reader is None:
+        return []
+
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    filtered = cv2.bilateralFilter(gray, 11, 17, 17)
+    edges = cv2.Canny(filtered, 30, 200)
+    contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    plates = []
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:15]:
+        approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+        if len(approx) == 4:
+            x, y, w, h = cv2.boundingRect(approx)
+            aspect = w / max(float(h), 1)
+            area = w * h
+            if 2.0 < aspect < 6.0 and 1000 < area < 50000:
+                plate_img = frame[max(0, y-5):y+h+5, max(0, x-5):x+w+5]
+                if plate_img.size == 0:
+                    continue
+                plate_img = cv2.resize(plate_img, None, fx=2, fy=2,
+                                        interpolation=cv2.INTER_CUBIC)
+                results = ocr_reader.readtext(plate_img)
+                for (_, text, conf) in results:
+                    text = text.strip().upper()
+                    if conf > 0.5 and len(text) >= 4:
+                        plates.append({
+                            "text": text, "confidence": conf,
+                            "bbox": (x, y, x + w, y + h),
+                        })
+    return plates
 
 
 def generate_demo_frame(tick):
-    """Generate a synthetic surveillance-like frame for demo mode."""
+    """Generate a synthetic surveillance frame for demo."""
     frame = np.zeros((H, W, 3), dtype=np.uint8)
-    frame[:] = (40, 50, 40)  # dark green background (ground)
-    # sky
+    frame[:] = (40, 50, 40)
     frame[:120] = (60, 40, 30)
-    # road
     cv2.rectangle(frame, (0, 350), (W, H), (70, 70, 70), -1)
     cv2.line(frame, (0, 400), (W, 400), (200, 200, 200), 1)
-    # fence
+
+    # Fence
     cv2.polylines(frame, [FENCE], True, (0, 255, 0), 2)
-    cv2.putText(frame, "VIRTUAL FENCE", (210, 112), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-    # animated person walking
+    cv2.putText(frame, "VIRTUAL FENCE", (210, 112),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+    # Animated person
     px = 100 + (tick * 3) % 400
     py = 250 + int(10 * np.sin(tick * 0.2))
-    cv2.circle(frame, (px, py - 25), 12, (180, 180, 200), -1)  # head
-    cv2.line(frame, (px, py - 12), (px, py + 15), (180, 180, 200), 2)  # body
+    cv2.circle(frame, (px, py - 25), 12, (180, 180, 200), -1)
+    cv2.line(frame, (px, py - 12), (px, py + 15), (180, 180, 200), 2)
     cv2.line(frame, (px, py), (px - 12, py + 20), (180, 180, 200), 2)
     cv2.line(frame, (px, py), (px + 12, py + 20), (180, 180, 200), 2)
-    # check if person in fence
-    in_fence = cv2.pointPolygonTest(FENCE, (float(px), float(py)), False) >= 0
-    color = (0, 0, 255) if in_fence else (0, 255, 255)
-    cv2.rectangle(frame, (px - 18, py - 40), (px + 18, py + 25), color, 2)
-    cv2.putText(frame, "PERSON", (px - 15, py - 42), cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
-    # car on road
+    in_fence = is_in_fence((px, py))
+    pcolor = (0, 0, 255) if in_fence else (0, 255, 255)
+    cv2.rectangle(frame, (px - 18, py - 40), (px + 18, py + 25), pcolor, 2)
+    cv2.putText(frame, "PERSON", (px - 15, py - 42),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, pcolor, 1)
+
+    # Animated car
     car_x = 500 - (tick * 4) % 600
     car_y = 410
     cv2.rectangle(frame, (car_x, car_y - 20), (car_x + 50, car_y + 5), (0, 100, 200), -1)
     cv2.rectangle(frame, (car_x + 10, car_y - 30), (car_x + 40, car_y - 20), (0, 80, 180), -1)
     cv2.circle(frame, (car_x + 8, car_y + 5), 5, (30, 30, 30), -1)
     cv2.circle(frame, (car_x + 42, car_y + 5), 5, (30, 30, 30), -1)
-    cv2.putText(frame, "VEHICLE", (car_x + 5, car_y - 32), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 165, 0), 1)
+    cv2.putText(frame, "VEHICLE", (car_x + 5, car_y - 32),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 165, 0), 1)
+
     # HUD
-    cv2.rectangle(frame, (0, 0), (W, 30), (20, 20, 30), -1)
-    cv2.putText(frame, f"IBVAP | BOP-01 CAM-01 | Frame {tick} | {datetime.now().strftime('%H:%M:%S')}", (10, 20),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 255), 1)
+    cv2.rectangle(frame, (0, 0), (W, 28), (20, 20, 30), -1)
+    cv2.putText(frame, f"IBVAP | BOP-01 CAM-01 | Frame {tick} | "
+                f"{datetime.now().strftime('%H:%M:%S')}",
+                (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 255), 1)
+
     return frame, in_fence
 
 
 # ═══════════════════════════════════════════════════
 # SIDEBAR
 # ═══════════════════════════════════════════════════
+
 with st.sidebar:
     st.markdown("## 🛡️ IBVAP")
     st.caption("Intelligent Border Video Analytics Platform")
     st.divider()
 
+    # Model status
+    if USE_YOLO:
+        st.success("✅ YOLOv8 loaded")
+    else:
+        st.warning("⚠️ Using HOG fallback (no torch)")
+    if ocr_reader:
+        st.success("✅ EasyOCR loaded")
+    else:
+        st.info("ℹ️ OCR not available")
+
+    st.divider()
     st.subheader("🎮 Demo Controls")
     if st.button("🚨 Simulate Fence Intrusion", use_container_width=True):
-        create_alert("fence_intrusion", "Person crossed Zone-1 at 1.4 m/s, bearing NE. No patrol scheduled.", "high", 1)
+        create_alert("fence_intrusion",
+                     "Person crossed Zone-1 at 1.4 m/s, bearing NE. No patrol scheduled.",
+                     "high")
     if st.button("🚗 Simulate ANPR Match", use_container_width=True):
-        plate = f"BR{np.random.randint(10,99)}AB{np.random.randint(1000,9999)}"
-        create_alert("anpr_match", f"Vehicle {plate} flagged — plate matches watchlist.", "medium", 2)
+        import random
+        plate = f"BR{random.randint(10,99)}AB{random.randint(1000,9999)}"
+        create_alert("anpr_match",
+                     f"Vehicle {plate} flagged — plate matches watchlist at Checkpoint-1.",
+                     "medium",
+                     {"plate_text": plate})
     if st.button("📡 Simulate Signal Loss", use_container_width=True):
         st.session_state.camera_status["CAM-03"] = False
-        create_alert("signal_loss", "CAM-03 at BOP-01 lost signal. Possible jamming/tampering.", "critical")
+        create_alert("signal_loss",
+                     "CAM-03 at BOP-01 lost signal. Possible jamming or tampering.",
+                     "critical")
     if st.button("🔄 Restore Camera", use_container_width=True):
         st.session_state.camera_status["CAM-03"] = True
         create_alert("signal_restored", "CAM-03 signal restored.", "low")
+    if st.button("🗑️ Clear All Alerts", use_container_width=True):
+        st.session_state.alerts = []
+        st.session_state.prev_hash = "0" * 64
 
     st.divider()
-    st.subheader("🔐 Tamper-Evident Log")
+    st.subheader("🔐 Hash Chain")
     chain_ok = verify_chain()
     if chain_ok:
-        st.success("✅ Hash chain VALID")
+        st.success("✅ Chain VALID")
     else:
-        st.error("❌ Hash chain BROKEN — tampering detected!")
-    st.metric("Total Alerts", len(st.session_state.alerts))
+        st.error("❌ Chain BROKEN!")
+    st.metric("Total Events", len(st.session_state.alerts))
     if st.session_state.prev_hash != "0" * 64:
-        st.caption(f"Chain head: `{st.session_state.prev_hash[:24]}…`")
+        st.caption(f"Head: `{st.session_state.prev_hash[:20]}…`")
 
     st.divider()
-    st.subheader("📡 Camera Status")
+    st.subheader("📡 Cameras")
     for cam, ok in st.session_state.camera_status.items():
         icon = "🟢" if ok else "🔴"
         st.markdown(f"{icon} {cam}")
 
 # ═══════════════════════════════════════════════════
-# MAIN AREA
+# MAIN
 # ═══════════════════════════════════════════════════
+
 st.markdown("# 🛡️ IBVAP — Border Video Analytics Platform")
 st.caption("Real-time AI-powered surveillance • YOLOv8 detection • Virtual fences • ANPR • Tamper-evident logging")
 
@@ -215,88 +367,110 @@ col1, col2 = st.columns([3, 2])
 with col1:
     st.subheader("📹 Live Detection Feed")
 
-    mode = st.radio("Mode", ["🎬 Synthetic Demo", "🎥 Upload Video", "📷 Webcam"], horizontal=True)
+    mode = st.radio("Source", ["🎬 Demo Mode", "🎥 Upload Video", "📷 Webcam"],
+                     horizontal=True)
 
-    hog = load_hog()
     placeholder = st.empty()
 
-    if mode == "🎬 Synthetic Demo":
+    if mode == "🎬 Demo Mode":
         tick = st.session_state.frame_count
         for _ in range(3):
             frame, in_fence = generate_demo_frame(tick)
-            # Run HOG on synthetic frame too
-            frame_resized = cv2.resize(frame, (W, H))
-            boxes, weights = hog.detectMultiScale(frame_resized, winStride=(8, 8), padding=(4, 4), scale=1.05)
-            for (x, y, w, h), conf in zip(boxes, weights):
-                cv2.rectangle(frame_resized, (x, y), (x + w, y + h), (0, 255, 255), 2)
-                cv2.putText(frame_resized, f"Person {conf[0]:.0%}", (x, y - 8),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
-                detections_count = len(boxes)
-            placeholder.image(frame_resized, channels="BGR", use_container_width=True)
+            # Run detection on synthetic frame
+            annotated, dets = detect_frame(frame)
+            placeholder.image(annotated, channels="BGR", use_container_width=True)
             tick += 1
             time.sleep(0.3)
         st.session_state.frame_count = tick
 
-        if in_fence:
-            create_alert("fence_intrusion", "Animated person crossed virtual fence Zone-1.", "high")
+        persons = sum(1 for d in dets if d["class"] == "person")
+        vehicles = sum(1 for d in dets if d["class"] in ("car", "bus", "truck", "motorcycle"))
+        st.caption(f"🔍 Detected: {len(dets)} objects | Persons: {persons} | Vehicles: {vehicles}")
 
     elif mode == "🎥 Upload Video":
-        uploaded = st.file_uploader("Upload a video file", type=["mp4", "avi", "mov", "mkv"])
+        uploaded = st.file_uploader("Upload video", type=["mp4", "avi", "mov", "mkv"])
         if uploaded:
-            import tempfile
             tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
             tfile.write(uploaded.read())
             cap = cv2.VideoCapture(tfile.name)
+
+            # Video controls
+            frame_idx = st.slider("Frame", 0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) - 1, 0)
+
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
             ret, frame = cap.read()
             if ret:
-                frame, dets = process_frame(frame, hog)
-                placeholder.image(frame, channels="BGR", use_container_width=True)
-                st.caption(f"Detected: {len(dets)} objects | "
-                           f"Persons: {sum(1 for d in dets if d['class'] == 'person')} | "
-                           f"Vehicles: {sum(1 for d in dets if d['class'] == 'vehicle')}")
+                annotated, dets = detect_frame(frame)
+
+                # Run OCR
+                plates = run_ocr_on_frame(frame)
+                if plates:
+                    for p in plates:
+                        cv2.rectangle(annotated, p["bbox"][:2], p["bbox"][2:], (0, 255, 0), 2)
+                        cv2.putText(annotated, p["text"], (p["bbox"][0], p["bbox"][1] - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+                placeholder.image(annotated, channels="BGR", use_container_width=True)
+
+                persons = sum(1 for d in dets if d["class"] == "person")
+                vehicles = sum(1 for d in dets if d["class"] in ("car", "bus", "truck", "motorcycle"))
+                st.caption(f"🔍 Frame {frame_idx} | Persons: {persons} | Vehicles: {vehicles} | Plates: {len(plates)}")
+
             cap.release()
         else:
-            st.info("📁 Upload a video to see real HOG person detection + color-based vehicle detection.")
+            st.info("📁 Upload a video to see detection in action")
 
     else:
-        st.warning("📷 Webcam requires a browser with camera access. Use Synthetic Demo or Upload Video for the pitch.")
+        st.warning("📷 Webcam requires browser camera access.")
         cam = cv2.VideoCapture(0)
         if cam.isOpened():
             ret, frame = cam.read()
             if ret:
-                frame, dets = process_frame(frame, hog)
-                placeholder.image(frame, channels="BGR", use_container_width=True)
+                annotated, dets = detect_frame(frame)
+                placeholder.image(annotated, channels="BGR", use_container_width=True)
             cam.release()
 
 with col2:
     st.subheader("🚨 Alert Log")
 
     if not st.session_state.alerts:
-        st.info("No alerts yet. Use the demo controls or upload a video to generate events.")
+        st.info("No alerts yet. Use demo controls or upload video.")
     else:
         for alert in reversed(st.session_state.alerts[-15:]):
             sev = alert["severity"]
             icon = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "⚪"}.get(sev, "⚪")
-            st.markdown(f"{icon} **`{alert['event_type'].upper()}`** — {alert['explanation']}")
-            st.caption(f"⏱ {alert['timestamp'][:19]} | ID: {alert['event_id']} | "
-                       f"Confidence: {alert.get('confidence', 'N/A')}")
+            st.markdown(f"{icon} **`{alert['event_type'].upper()}`**")
+            st.markdown(f"> {alert['explanation']}")
+            st.caption(f"⏱ {alert['timestamp'][:19]} | ID: {alert['event_id']}")
 
     st.divider()
-    st.subheader("📊 System Status")
+
+    # Stats
+    st.subheader("📊 Dashboard")
     c1, c2, c3 = st.columns(3)
-    c1.metric("Active Cameras", sum(1 for v in st.session_state.camera_status.values() if v))
+    c1.metric("Cameras", sum(1 for v in st.session_state.camera_status.values() if v))
     c2.metric("Alerts", len(st.session_state.alerts))
     critical = sum(1 for a in st.session_state.alerts if a["severity"] == "critical")
     c3.metric("Critical", critical)
 
-    st.divider()
-    st.subheader("📋 Alert Object Schema")
+    # Alert object schema
     if st.session_state.alerts:
-        last = st.session_state.alerts[-1]
+        st.subheader("📋 Latest Alert Object")
+        last = st.session_state.alerts[-1].copy()
+        last.pop("prev_hash", None)
         st.json(last)
 
-# ── Footer ──
+    # Hash chain verification
+    st.subheader("🔗 Hash Chain Verification")
+    if st.button("Verify Chain Integrity"):
+        chain_ok = verify_chain()
+        if chain_ok:
+            st.success(f"✅ Chain valid — {len(st.session_state.alerts)} events verified")
+        else:
+            st.error("❌ Chain integrity compromised!")
+
+# Footer
 st.divider()
 st.caption("IBVAP — Smart India Hackathon 2026 | "
-           "\"Every AI-CCTV platform assumes good bandwidth, good cameras, and infinite trust in every alert. "
-           "Border posts have none of those three. IBVAP is designed for the actual constraint.\"")
+           "\"Every AI-CCTV platform assumes good bandwidth, good cameras, and infinite trust. "
+           "Border posts have none of those three.\"")

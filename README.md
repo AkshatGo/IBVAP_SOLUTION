@@ -1,182 +1,186 @@
-# IBVAP — Intelligent Border Video Analytics Platform
-### Smart India Hackathon 2026
+# 🛡️ IBVAP — Intelligent Border Video Analytics Platform
 
-> **"Every AI-CCTV platform on the market assumes good bandwidth, good cameras, and infinite trust in every alert. Border posts have none of those three. IBVAP is the first platform designed for the actual constraint — not the demo constraint."**
-
----
-
-## 🎯 One-Line Pitch
-
-IBVAP is a tiered, bandwidth-honest, alert-that-can-be-trusted surveillance software layer for existing CCTV infrastructure at Indian border posts and checkpoints.
+> **Smart India Hackathon 2026 | Problem Statement SIH26187**
+> *"Every AI-CCTV platform assumes good bandwidth, good cameras, and infinite trust in every alert. Border posts have none of those three. IBVAP is designed for the actual constraint."*
 
 ---
 
-## 📋 Problem Statement
+## 🎯 What It Does
 
-| Challenge | Impact | Current Gap |
-|-----------|--------|-------------|
-| Low/intermittent bandwidth | Video streaming to cloud fails | All existing solutions stream video |
-| Legacy hardware | No AI-capable cameras | Solutions assume modern IP cameras |
-| False-positive fatigue | Guards ignore alerts | No behavioral baseline or context |
-| Night/poor visibility | Face recognition fails | Overclaiming IR/thermal capabilities |
-| Security evasion | Jammed cameras go silent | No signal-loss detection |
-| Data governance | FRS/ANPR near borders is sensitive | No access control or audit trail |
+IBVAP is a **tiered, bandwidth-honest, alert-that-can-be-trusted** surveillance software layer for existing CCTV cameras at border checkpoints and border roads.
+
+### Core Features
+
+| Feature | Description |
+|---------|-------------|
+| **Object Detection** | YOLOv8-nano for real-time person & vehicle detection |
+| **Object Tracking** | ByteTrack for persistent IDs across frames |
+| **Virtual Fence** | User-drawn polygon zones with intrusion detection |
+| **ANPR** | Multi-frame OCR consensus voting for Indian plates |
+| **Signal Loss Alert** | Camera jamming/tampering detection |
+| **Tamper-Evident Log** | SHA-256 hash chain for all events |
+| **Night Detection** | Motion-silhouette detection (no IR/thermal claimed) |
+| **Alert Dashboard** | Real-time map, alerts, camera status |
 
 ---
 
 ## 🏗️ Architecture
 
-### Tiered Deployment Model
-
 ```
-TIER 1 — High-priority BOP / Check Post
-├── IP Camera → Local Edge Box (Jetson Orin Nano, ~$150-250)
-│   ├── Detection (YOLOv8-nano)
-│   ├── Tracking (ByteTrack)
-│   ├── ANPR (PaddleOCR/EasyOCR)
-│   ├── Virtual Fence Monitor
-│   └── Behavioral Baseline Model
-└── MQTT publish to Command Dashboard
-
-TIER 2 — Remote Border-Road Camera
-├── IP Camera → Lightweight motion trigger ($20-30 MCU)
-├── On trigger: buffer short clip locally
-└── Forward when link exists
-
-TIER 3 — Command Center (Regional/Central)
-├── Aggregates all events across posts
-├── Map-based dashboard
-├── Cross-camera correlation
-└── C2 system integration (MQTT/API)
+┌─────────────────────────────────────────────────────┐
+│                   TIER 1: Edge Node                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
+│  │ YOLOv8   │→ │ ByteTrack│→ │ Virtual Fence    │  │
+│  │ Detector │  │ Tracker  │  │ + ANPR + Signal  │  │
+│  └──────────┘  └──────────┘  └──────────────────┘  │
+│                      ↓                              │
+│              Hash Chain Logger                      │
+└──────────────────────┬──────────────────────────────┘
+                       │ MQTT / WebSocket / REST
+┌──────────────────────┴──────────────────────────────┐
+│                   TIER 2: Backend                    │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
+│  │ FastAPI  │  │ WebSocket│  │ Event Storage    │  │
+│  │ REST API │  │ Stream   │  │ + Audit Log      │  │
+│  └──────────┘  └──────────┘  └──────────────────┘  │
+└──────────────────────┬──────────────────────────────┘
+                       │
+┌──────────────────────┴──────────────────────────────┐
+│                   TIER 3: Dashboard                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
+│  │ Live Feed│  │ Alert    │  │ Camera Status    │  │
+│  │ + Detect │  │ Log      │  │ + Hash Verify    │  │
+│  └──────────┘  └──────────┘  └──────────────────┘  │
+└─────────────────────────────────────────────────────┘
 ```
 
-### Key Design Principles
-
-1. **Edge-first processing** — Inference happens at the camera site, not the cloud
-2. **Metadata-only transport** — Only compact JSON events travel upstream, never raw video
-3. **Store-and-forward** — Every tier logs locally first, syncs opportunistically
-4. **Signal-loss-as-alert** — A blinded/jammed camera triggers escalation, not silence
-5. **Honest capability claims** — State limitations proactively
-
 ---
 
-## 🚀 Features
+## 🚀 Quick Start
 
-### Build and Demo Live (Hackathon-Realistic)
-1. ✅ **Human + Vehicle Detection/Tracking** — YOLOv8-nano, real-time
-2. ✅ **Virtual Fence Intrusion Detection** — User-drawn polygon, instant alert
-3. ✅ **ANPR with Multi-Frame OCR Consensus** — Beats single-frame baseline
-4. ✅ **Alert Dashboard** — Map view, severity colors, explanation field
-5. ✅ **Signal-Loss Alerting** — Kill a camera feed, see alert fire immediately
-6. ✅ **Tamper-Evident Log** — Hash chain, break a record, show chain validation fail
+### 1. Install Dependencies
 
-### Design Fully, Demo as Mock/Roadmap
-7. 📋 **Face Detection → Identity Match** — Detection only, FRS requires IR hardware
-8. 📋 **Behavioral Baseline Learning** — Show mechanism, not claimed weeks of learning
-9. 📋 **Cross-Camera Correlation** — Heuristic v1, not full re-identification
-10. 📋 **C2 Integration** — Show JSON payload and MQTT topic structure
+```bash
+pip install -r requirements.txt
+```
 
----
+### 2. Run Dashboard
 
-## ⚡ Performance Targets
+```bash
+python main.py dashboard
+# Opens at http://localhost:8501
+```
 
-| Alert Type | Target Latency | Why |
-|------------|----------------|-----|
-| Virtual fence intrusion | < 3 sec | Time-critical |
-| Vehicle/ANPR match | < 15 sec | Consensus voting needs window |
-| Behavioral deviation | < 30 sec | Requires trend evaluation |
-| Signal loss | < 5 sec | Near-instant check |
+### 3. Run API Server
 
----
+```bash
+python main.py server
+# API at http://localhost:8000
+# Docs at http://localhost:8000/docs
+```
 
-## 🛡️ Security
+### 4. Run Demo on Video
 
-- **Signal-loss = alert** — Built-in, not an afterthought
-- **Hash chain** — SHA-256 tamper-evident event log
-- **RBAC** — Role-based access control (Operator, Commander, Admin, Auditor)
-- **Audit trail** — Immutable append-only log
-- **Data retention** — Configurable per data type
+```bash
+python main.py demo --video path/to/video.mp4
+```
 
----
+### 5. Docker
 
-## 📊 Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| Detection/Tracking | YOLOv8-nano (ONNX/TensorRT) + ByteTrack |
-| ANPR | YOLO plate localization + PaddleOCR |
-| Edge Runtime | Jetson Orin Nano / x86 mini-PC |
-| Transport | MQTT (lightweight, low-bandwidth) |
-| Backend | FastAPI + PostgreSQL + Redis |
-| Dashboard | React + Leaflet/Mapbox |
-| Tamper-evidence | SHA-256 hash chain |
+```bash
+docker-compose up dashboard   # Dashboard only
+docker-compose up              # Full stack
+```
 
 ---
 
 ## 📁 Project Structure
 
 ```
-SIH2026/
-├── docs/
-│   ├── PRD.md                    # Product Requirements Document
-│   ├── ARCHITECTURE.md           # System architecture details
-│   ├── API_SCHEMAS.md            # API schemas and data models
-│   └── PROJECT_GRAPH.md          # Interactive project visualization
+IBVAP_SOLUTION/
+├── main.py                    # Entry point
+├── web_demo.py                # Streamlit dashboard
+├── requirements.txt           # Python dependencies
+├── Dockerfile                 # Docker build
+├── docker-compose.yml         # Full stack
+│
 ├── src/
-│   ├── edge/                     # Edge inference modules
-│   ├── backend/                  # FastAPI backend
-│   ├── dashboard/                # React dashboard
-│   └── models/                   # ML model configs
-├── config/                       # Configuration files
-├── scripts/                      # Deployment scripts
-├── tests/                        # Test suite
-└── data/                         # Datasets and model weights
+│   ├── config.py              # System configuration
+│   │
+│   ├── edge/                  # Edge inference modules
+│   │   ├── detector.py        # YOLOv8 object detection
+│   │   ├── tracker.py         # ByteTrack object tracking
+│   │   ├── anpr.py            # ANPR with OCR consensus
+│   │   ├── fence.py           # Virtual fence zones
+│   │   ├── signal.py          # Signal loss detection
+│   │   ├── hashchain.py       # SHA-256 tamper-evident log
+│   │   └── pipeline.py        # Main inference pipeline
+│   │
+│   ├── backend/               # API server
+│   │   └── api.py             # FastAPI REST + WebSocket
+│   │
+│   ├── models/                # ML model configs
+│   │   └── dataset_catalog.py # Dataset registry
+│   │
+│   └── utils/                 # Utilities
+│
+├── config/                    # Configuration files
+├── scripts/                   # Deployment scripts
+├── tests/                     # Unit tests
+├── data/                      # Datasets
+│   ├── indian_number_plates/  # Indian plate dataset
+│   └── models/                # Trained model weights
+│
+└── docs/                      # Documentation
+    ├── PRD.md                 # Product Requirements
+    ├── ARCHITECTURE.md        # System Architecture
+    ├── API_SCHEMAS.md         # API Schemas
+    └── SLIDE_DECK.md          # Presentation slides
 ```
 
 ---
 
-## 🎬 Demo Script (5 minutes)
+## 🔧 API Endpoints
 
-1. **One-liner pitch** (10 sec) — The constraint-aware platform
-2. **Tiered architecture diagram** (20 sec) — Why it's deployable, not just demoable
-3. **Live: Virtual fence** — Draw polygon, walk across, alert fires in < 3 sec with explanation
-4. **Live: Multi-frame ANPR** — Show consensus voting beating single-frame baseline
-5. **Kill a camera feed** — Signal-loss alert fires immediately as high severity
-6. **Tamper-evident log** — Break a past record, show chain validation fail
-7. **Honest roadmap slide** — What needs IR hardware, what we didn't fake
-
----
-
-## 🏆 Why This Wins
-
-| Criteria | How IBVAP Addresses It |
-|----------|------------------------|
-| **Innovation** | Bandwidth/hardware-tiered design + signal-loss-as-alert + explainable alerts |
-| **Technical Feasibility** | Every "built" claim is actually built; reach items clearly labeled roadmap |
-| **Real-World Viability** | Cost tiers, store-and-forward, cold-start handling |
-| **Security-Mindedness** | Tamper-evident logs, adversarial-evasion awareness, governance |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/status` | System status |
+| GET | `/api/alerts` | Recent alerts |
+| GET | `/api/alerts/verify` | Verify hash chain |
+| GET | `/api/cameras` | Camera status |
+| GET | `/api/fences` | Virtual fence zones |
+| POST | `/api/fences` | Add fence zone |
+| GET | `/api/tracks` | Active tracked objects |
+| GET | `/api/plates` | ANPR results |
+| POST | `/api/process/video` | Process uploaded video |
+| WS | `/ws/live` | Live detection stream |
 
 ---
 
-## 📚 Documentation
+## 📊 Datasets Used
 
-- [Product Requirements Document](docs/PRD.md)
-- [System Architecture](docs/ARCHITECTURE.md)
-- [API Schemas & Data Models](docs/API_SCHEMAS.md)
-- [Project Visualization Graph](docs/PROJECT_GRAPH.md)
-
----
-
-## 🤝 Team
-
-- **SIH2026 Team**
+| Dataset | Purpose |
+|---------|---------|
+| IDD (IIIT-H) | Indian driving scenes |
+| Indian Number Plates | ANPR training |
+| VIRAT | Surveillance benchmark |
+| ExDark | Low-light detection |
+| WIDER FACE | Face detection |
+| BDD100K | Vehicle tracking |
 
 ---
 
-## 📄 License
+## 🎤 Pitch Points
 
-MIT License
+1. **"The actual constraint, not the demo constraint"** — designed for thin/intermittent/satellite links
+2. **Store-and-forward everywhere** — never goes silent, degrades gracefully
+3. **Signal-loss-is-itself-an-alert** — blinded camera = high priority event
+4. **Tiered by budget** — Tier 2 sites cost <$50 in hardware
+5. **Honest night claims** — motion/silhouette, not face-level ID (sensor physics)
+6. **Tamper-evident** — SHA-256 hash chain, provable audit trail
 
 ---
 
-*Last Updated: 2026-08-29*
+## 📝 License
+
+Smart India Hackathon 2026 — Team IBVAP
