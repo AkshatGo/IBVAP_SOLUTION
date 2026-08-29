@@ -1,6 +1,13 @@
 """
 IBVAP — Intelligent Border Video Analytics Platform
-Full working dashboard with YOLOv8 detection, virtual fence, ANPR, hash chain verification.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Full working dashboard with:
+  • YOLOv8 / HOG person + vehicle detection
+  • Virtual fence intrusion alerts
+  • ANPR (number plate recognition)
+  • Tamper-evident SHA-256 hash chain
+  • Camera signal-loss detection
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import streamlit as st
 import cv2
@@ -9,6 +16,7 @@ import time
 import json
 import hashlib
 import tempfile
+import random
 from datetime import datetime
 from pathlib import Path
 import sys
@@ -16,7 +24,12 @@ import sys
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-st.set_page_config(page_title="IBVAP", page_icon="🛡️", layout="wide")
+st.set_page_config(
+    page_title="IBVAP — Border Video Analytics",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 # ═══════════════════════════════════════════════════
 # LOAD MODELS
@@ -252,44 +265,59 @@ def run_ocr_on_frame(frame):
 def generate_demo_frame(tick):
     """Generate a synthetic surveillance frame for demo."""
     frame = np.zeros((H, W, 3), dtype=np.uint8)
-    frame[:] = (40, 50, 40)
-    frame[:120] = (60, 40, 30)
-    cv2.rectangle(frame, (0, 350), (W, H), (70, 70, 70), -1)
-    cv2.line(frame, (0, 400), (W, 400), (200, 200, 200), 1)
+    # Ground / grass
+    frame[:] = (35, 50, 35)
+    # Sky
+    frame[:100] = (70, 50, 35)
+    # Road
+    cv2.rectangle(frame, (0, 340), (W, H), (65, 65, 65), -1)
+    cv2.line(frame, (0, 370), (W, 370), (180, 180, 180), 1, cv2.LINE_AA)
+    # Dashed centre line
+    for dx in range(0, W, 40):
+        cv2.line(frame, (dx, 370), (dx + 20, 370), (240, 240, 60), 2, cv2.LINE_AA)
 
-    # Fence
-    cv2.polylines(frame, [FENCE], True, (0, 255, 0), 2)
-    cv2.putText(frame, "VIRTUAL FENCE", (210, 112),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    # ── Fence ──
+    cv2.polylines(frame, [FENCE], True, (0, 220, 0), 2, cv2.LINE_AA)
+    # Label top-centre of fence
+    fc = FENCE.mean(axis=0).astype(int)
+    cv2.putText(frame, "VIRTUAL FENCE", (fc[0] - 50, FENCE[0][1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 220, 0), 1, cv2.LINE_AA)
 
-    # Animated person
+    # ── Animated person ──
     px = 100 + (tick * 3) % 400
-    py = 250 + int(10 * np.sin(tick * 0.2))
-    cv2.circle(frame, (px, py - 25), 12, (180, 180, 200), -1)
-    cv2.line(frame, (px, py - 12), (px, py + 15), (180, 180, 200), 2)
-    cv2.line(frame, (px, py), (px - 12, py + 20), (180, 180, 200), 2)
-    cv2.line(frame, (px, py), (px + 12, py + 20), (180, 180, 200), 2)
+    py = 260 + int(8 * np.sin(tick * 0.25))
+    # Body
+    cv2.circle(frame, (px, py - 28), 11, (200, 200, 210), -1, cv2.LINE_AA)
+    cv2.line(frame, (px, py - 16), (px, py + 10), (200, 200, 210), 2, cv2.LINE_AA)
+    cv2.line(frame, (px, py), (px - 14, py + 18), (200, 200, 210), 2, cv2.LINE_AA)
+    cv2.line(frame, (px, py), (px + 14, py + 18), (200, 200, 210), 2, cv2.LINE_AA)
     in_fence = is_in_fence((px, py))
     pcolor = (0, 0, 255) if in_fence else (0, 255, 255)
-    cv2.rectangle(frame, (px - 18, py - 40), (px + 18, py + 25), pcolor, 2)
-    cv2.putText(frame, "PERSON", (px - 15, py - 42),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, pcolor, 1)
+    cv2.rectangle(frame, (px - 18, py - 42), (px + 18, py + 24), pcolor, 2, cv2.LINE_AA)
+    cv2.putText(frame, f"PERSON 0.{random.randint(82,97)}", (px - 18, py - 44),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.33, pcolor, 1, cv2.LINE_AA)
 
-    # Animated car
-    car_x = 500 - (tick * 4) % 600
-    car_y = 410
-    cv2.rectangle(frame, (car_x, car_y - 20), (car_x + 50, car_y + 5), (0, 100, 200), -1)
-    cv2.rectangle(frame, (car_x + 10, car_y - 30), (car_x + 40, car_y - 20), (0, 80, 180), -1)
-    cv2.circle(frame, (car_x + 8, car_y + 5), 5, (30, 30, 30), -1)
-    cv2.circle(frame, (car_x + 42, car_y + 5), 5, (30, 30, 30), -1)
-    cv2.putText(frame, "VEHICLE", (car_x + 5, car_y - 32),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 165, 0), 1)
+    # ── Animated car ──
+    car_x = 500 - (tick * 4) % 650
+    car_y = 380
+    cv2.rectangle(frame, (car_x, car_y - 18), (car_x + 55, car_y + 8), (10, 80, 180), -1, cv2.LINE_AA)
+    cv2.rectangle(frame, (car_x + 8, car_y - 28), (car_x + 45, car_y - 18), (10, 60, 160), -1, cv2.LINE_AA)
+    cv2.circle(frame, (car_x + 10, car_y + 10), 5, (30, 30, 30), -1)
+    cv2.circle(frame, (car_x + 45, car_y + 10), 5, (30, 30, 30), -1)
+    cv2.putText(frame, f"CAR 0.{random.randint(75,94)}", (car_x, car_y - 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.33, (255, 165, 0), 1, cv2.LINE_AA)
 
-    # HUD
-    cv2.rectangle(frame, (0, 0), (W, 28), (20, 20, 30), -1)
-    cv2.putText(frame, f"IBVAP | BOP-01 CAM-01 | Frame {tick} | "
-                f"{datetime.now().strftime('%H:%M:%S')}",
-                (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (100, 200, 255), 1)
+    # ── HUD top bar ──
+    cv2.rectangle(frame, (0, 0), (W, 26), (15, 15, 25), -1)
+    cv2.putText(
+        frame,
+        f"IBVAP  |  BOP-01  CAM-01  |  Frame {tick}  |  {datetime.now().strftime('%H:%M:%S')}",
+        (8, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (100, 200, 255), 1, cv2.LINE_AA,
+    )
+    # Detection count bar
+    cv2.rectangle(frame, (0, H - 24), (W, H), (15, 15, 25), -1)
+    cv2.putText(frame, f"Detection engine: {'YOLOv8' if USE_YOLO else 'HOG'}  |  Objects: 2",
+                (8, H - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1, cv2.LINE_AA)
 
     return frame, in_fence
 

@@ -15,6 +15,7 @@ from .anpr import ANPREngine, ConsensusResult
 from .fence import VirtualFence, IntrusionEvent
 from .signal import SignalLossDetector
 from .hashchain import HashChain, EventRecord
+from ..utils.logger import log
 
 
 @dataclass
@@ -69,10 +70,12 @@ class IBVAPPipeline:
     def load(self):
         """Load all ML models."""
         if not self._model_loaded:
+            log.info(f"Loading models for {self.site_id}/{self.camera_id}")
             self.detector.load()
             self.anpr.load()
             self.signal_detector.register_camera(self.camera_id)
             self._model_loaded = True
+            log.info("Models loaded successfully")
         return self
 
     def setup_fence(self, zones: Optional[List[dict]] = None):
@@ -127,6 +130,7 @@ class IBVAPPipeline:
         # 1. Signal loss check
         signal_msg = self.signal_detector.update(self.camera_id, frame)
         if signal_msg and "restored" not in signal_msg.lower():
+            log.signal_loss(self.camera_id, signal_msg)
             record = self._fire_alert("signal_loss", "critical",
                                        {"message": signal_msg})
             alerts.append(record.to_dict())
@@ -193,7 +197,11 @@ class IBVAPPipeline:
         # 6. Draw annotations
         annotated = self._draw_annotations(frame, tracked, intrusions)
 
-        # 7. Compile result
+        # 7. Log and compile result
+        if self.frame_id % 100 == 0:
+            chain_valid = self.hash_chain.verify()[0]
+            log.chain(len(self.hash_chain), chain_valid)
+
         return FrameResult(
             frame_id=self.frame_id,
             timestamp=now,
