@@ -35,11 +35,23 @@ st.set_page_config(
 # LOAD MODELS
 # ═══════════════════════════════════════════════════
 
+# Weights fine-tuned on IDD (7 classes incl. autorickshaw). Versioned in
+# the repo, so the hosted demo gets them too.
+FINE_TUNED_DETECTOR = Path(__file__).parent / "models" / "weights" / "detection.pt"
+
+
 @st.cache_resource
 def load_yolo():
-    """Load YOLOv8 model."""
+    """Load the fine-tuned detector if present, else stock YOLOv8n.
+
+    Returns (model, is_fine_tuned) — the caller needs to know which, because
+    the two have different class taxonomies and want different confidence
+    cutoffs.
+    """
     from ultralytics import YOLO
-    return YOLO("yolov8n.pt")
+    if FINE_TUNED_DETECTOR.exists():
+        return YOLO(str(FINE_TUNED_DETECTOR)), True
+    return YOLO("yolov8n.pt"), False
 
 @st.cache_resource
 def load_hog():
@@ -78,11 +90,12 @@ USE_YOLO = False
 hog = None
 motion = None
 try:
-    model = load_yolo()
+    model, FINE_TUNED = load_yolo()
     USE_YOLO = True
-    ENGINE = "YOLOv8"
+    ENGINE = "YOLOv8 (IDD fine-tuned)" if FINE_TUNED else "YOLOv8 (stock COCO)"
 except Exception:
     model = None
+    FINE_TUNED = False
     hog = load_hog()
     if hog is not None:
         ENGINE = "HOG"
@@ -116,8 +129,25 @@ if "plate_cache" not in st.session_state:
 W, H = 640, 480
 FENCE = np.array([[180, 120], [460, 120], [460, 380], [180, 380]], np.int32)
 
-TARGET_CLASSES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
-VEHICLE_CLASSES = {2, 3, 5, 7}
+# Class indices are taxonomy-specific: stock COCO puts bus at 5 and truck
+# at 7, the fine-tuned model packs its seven classes into 0-6. Reading the
+# map off the loaded model is what stops an autorickshaw being reported as
+# a truck.
+_WANTED = {"person", "bicycle", "car", "motorcycle", "bus", "truck", "autorickshaw"}
+_VEHICLES = {"car", "motorcycle", "bus", "truck", "autorickshaw"}
+
+if USE_YOLO and getattr(model, "names", None):
+    _names = {int(i): str(n) for i, n in dict(model.names).items()}
+    TARGET_CLASSES = {i: n for i, n in _names.items() if n in _WANTED}
+    VEHICLE_CLASSES = {i for i, n in TARGET_CLASSES.items() if n in _VEHICLES}
+else:
+    TARGET_CLASSES = {0: "person", 1: "bicycle", 2: "car", 3: "motorcycle",
+                      5: "bus", 7: "truck"}
+    VEHICLE_CLASSES = {2, 3, 5, 7}
+
+# 0.45 suits stock COCO; the fine-tuned model peaks at 0.25 (F1), and a
+# border demo should favour recall over precision.
+DETECT_CONF = 0.25 if (USE_YOLO and FINE_TUNED) else 0.45
 
 INDIAN_PLATE_PATTERN = (
     r"(?:^[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{4}$)"
@@ -184,7 +214,7 @@ def detect_frame(frame):
     detections = []
 
     if USE_YOLO and model is not None:
-        results = model(frame, conf=0.45, verbose=False)
+        results = model(frame, conf=DETECT_CONF, verbose=False)
         for r in results:
             if r.boxes is None:
                 continue
@@ -376,8 +406,11 @@ with st.sidebar:
     st.divider()
 
     # Model status
-    if USE_YOLO:
-        st.success("✅ YOLOv8 loaded")
+    if USE_YOLO and FINE_TUNED:
+        st.success("✅ YOLOv8 fine-tuned on IDD")
+        st.caption(f"7 classes incl. autorickshaw · conf {DETECT_CONF}")
+    elif USE_YOLO:
+        st.success("✅ YOLOv8 loaded (stock COCO)")
     elif ENGINE == "HOG":
         st.warning("⚠️ Using HOG fallback (no torch)")
     else:
