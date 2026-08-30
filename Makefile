@@ -3,7 +3,7 @@
 
 .PHONY: help install test run-server run-dashboard demo verify-chain corrupt-chain \
         docker-up docker-down docker-build docker-logs \
-        convert-idd convert-exdark darken-detection augment-anpr \
+        convert-idd convert-exdark darken-detection convert-plates augment-anpr \
         train-detection train-plate eval-detection eval-anpr eval-threshold \
         export-onnx clean
 
@@ -35,6 +35,7 @@ help:
 	@echo "  make convert-idd       Convert IDD-Detection to YOLO format"
 	@echo "  make convert-exdark    Convert ExDark (low-light) to YOLO format"
 	@echo "  make darken-detection  Bake synthetic night copies of train images"
+	@echo "  make convert-plates    Convert plate datasets to single-class YOLO"
 	@echo "  make augment-anpr      Augment the ANPR plate dataset"
 	@echo ""
 	@echo "Training & Evaluation (needs a GPU — see docs/ROADMAP.md §4):"
@@ -119,6 +120,11 @@ convert-exdark:
 darken-detection:
 	@echo "Synthesising low-light training copies..."
 	python scripts/exdark_to_yolo.py darken --out-root data/detection --fraction 0.30
+
+convert-plates:
+	@echo "Converting plate datasets to YOLO format..."
+	python scripts/plates_to_yolo.py --root data/raw/car-plate-detection --format voc
+	python scripts/plates_to_yolo.py --root data/raw/UFPR-ALPR --format ufpr
 
 augment-anpr:
 	@echo "Augmenting ANPR plate dataset..."

@@ -124,10 +124,10 @@ python -m src.edge.hashchain verify
 make test          # or: python -m pytest
 ```
 
-128 tests covering the pipeline contract (Detection → Tracker → Fence →
-ANPR → HashChain) and every REST endpoint plus the WebSocket. They use
-stubbed detections, so the suite runs in ~4 seconds and downloads no model
-weights.
+151 tests covering the pipeline contract (Detection → Tracker → Fence →
+ANPR → HashChain), every REST endpoint plus the WebSocket, and the dataset
+converters. They use stubbed detections, so the suite runs in ~4 seconds and
+downloads no model weights.
 
 ---
 
@@ -192,8 +192,9 @@ IBVAP_SOLUTION/
 │       └── logger.py          # Structured logging
 │
 ├── scripts/                   # Dataset prep, training, evaluation
-│   ├── idd_to_yolo.py         # IDD-Detection → YOLO converter
+│   ├── idd_to_yolo.py         # IDD-Detection → YOLO (+ frame dedup)
 │   ├── exdark_to_yolo.py      # ExDark → YOLO + synthetic low-light
+│   ├── plates_to_yolo.py      # Plate datasets → single-class YOLO
 │   ├── anpr_augmentation.py   # Plate augmentation pipeline
 │   ├── train.py               # YOLOv8 fine-tuning (detection | plate)
 │   ├── evaluate.py            # mAP day/night split, ANPR accuracy

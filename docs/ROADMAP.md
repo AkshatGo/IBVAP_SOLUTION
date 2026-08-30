@@ -98,12 +98,21 @@ data/
 3. Map classes to: person, bicycle, car, motorcycle, bus, truck
 4. Normalize bounding boxes to [0,1]
 5. Train/val split: 85/15
-6. Deduplicate near-identical dashcam frames (perceptual hash filter)
+6. Deduplicate near-identical dashcam frames — a difference hash compared
+   against the last *kept* frame (not the previous one, so a slow pan can't
+   ratchet through in sub-threshold steps). Runs in temporal order before
+   the shuffle; `--dedup-distance 0` disables it.
 7. **Script:** `scripts/idd_to_yolo.py`
 
 ### 3.3 ANPR Preprocessing
 
-1. Convert both datasets to YOLO format (single class: `plate`)
+1. Convert both datasets to YOLO format (single class: `plate`) —
+   `scripts/plates_to_yolo.py`, which reads PASCAL-VOC XML (`--format voc`,
+   the Kaggle mirrors) and UFPR-ALPR's per-image `.txt` (`--format ufpr`,
+   whose `position_plate` is `x y w h`, not corner-to-corner). Both write
+   into one tree with per-source filename prefixes so they merge cleanly.
+   UFPR's plate strings are exported as `data/anpr/plates_val.json`, which
+   is the ground truth `scripts/evaluate.py anpr` scores against.
 2. Apply augmentation:
    - Motion blur (kernel 3-9px)
    - Perspective warp (±15°)
@@ -111,7 +120,7 @@ data/
    - Downscale-then-upscale (0.5x-0.7x)
    - Gaussian/Poisson sensor noise
 3. Train/val split: 80/20
-4. Keep classical contour localizer as CPU fallback
+4. Keep classical contour localizer as CPU fallback — done, see §5.2
 5. **Script:** `scripts/anpr_augmentation.py`
 
 ### 3.4 ExDark Preprocessing
@@ -188,3 +197,76 @@ localization rather than to OCR (which stays unchanged EasyOCR).
 | onnxruntime | ONNX model inference | P1 edge optimization |
 | TensorRT | Jetson optimization | P2 hardware tuning |
 | imagehash | IDD frame deduplication | When running `scripts/idd_to_yolo.py` |
+
+---
+
+## 7. Training Runbook (free-tier GPU)
+
+The local dev machine has an RTX 3050 (4GB) but a **CPU-only torch build**,
+so the card is unusable until a CUDA build is installed. Free-tier Kaggle
+gives a T4 (16GB) and 30 GPU-hrs/week, which is both faster and larger —
+prefer it over the laptop.
+
+### 7.1 Get the data
+
+| Dataset | How | Automatable? |
+|---|---|---|
+| IDD-Detection | Register at https://idd.insaan.iiit.ac.in, download the Detection subset | **No** — manual signup, start it early, approval can take days |
+| Plate dataset (VOC) | `kaggle datasets download -d andrewmvd/car-plate-detection` | Yes, with `~/.kaggle/kaggle.json` |
+| UFPR-ALPR | Request form at https://web.inf.ufpr.br/vri/databases/ufpr-alpr/ | **No** — manual request |
+| ExDark | https://github.com/cs-chan/Exclusively-Dark-Image-Dataset | Yes |
+
+### 7.2 Build the datasets
+
+```bash
+# Detection: IDD, then ExDark, then synthetic night copies
+python scripts/idd_to_yolo.py --idd-root data/raw/idd_detection --out-root data/detection
+python scripts/exdark_to_yolo.py convert --exdark-root data/raw/ExDark --out-root data/detection
+python scripts/exdark_to_yolo.py darken --out-root data/detection --fraction 0.30
+
+# ANPR: convert, then augment
+python scripts/plates_to_yolo.py --root data/raw/car-plate-detection --format voc
+python scripts/plates_to_yolo.py --root data/raw/UFPR-ALPR --format ufpr
+python scripts/anpr_augmentation.py \
+    --images-dir data/anpr/images/train --labels-dir data/anpr/labels/train \
+    --out-dir data/anpr_augmented/train --copies-per-image 3
+```
+
+### 7.3 Train on Kaggle / Colab
+
+Upload the built `data/detection` and `data/anpr` trees as a Kaggle Dataset
+(they are far smaller than the raw downloads after conversion and dedup),
+then in a GPU-enabled notebook:
+
+```python
+!git clone https://github.com/AkshatGo/IBVAP_SOLUTION.git && cd IBVAP_SOLUTION
+!pip install -q ultralytics albumentations
+!python scripts/train.py detection --data /kaggle/input/ibvap-detection/data.yaml --epochs 80
+!python scripts/train.py plate     --data /kaggle/input/ibvap-anpr/data.yaml      --epochs 50
+```
+
+On the laptop instead, install a CUDA torch build first and drop the batch
+size — 4GB will not hold batch 16 at 640px:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+python scripts/train.py detection --batch 8
+```
+
+### 7.4 Measure, then integrate
+
+```bash
+python scripts/evaluate.py detection --weights runs/detect/ibvap_detection/weights/best.pt
+python scripts/evaluate.py threshold --weights runs/detect/ibvap_detection/weights/best.pt
+python scripts/evaluate.py anpr --images-dir data/anpr/images/val \
+    --ground-truth data/anpr/plates_val.json \
+    --plate-model runs/detect/ibvap_plate/weights/best.pt
+python scripts/export_onnx.py --weights runs/detect/ibvap_detection/weights/best.pt
+
+# A/B the fine-tuned model against stock, live
+IBVAP_DETECTION_MODEL=runs/detect/ibvap_detection/weights/best.pt python main.py demo
+```
+
+Run `evaluate.py anpr` **without** `--plate-model` first — that is the
+contour-localizer baseline the fine-tuned number has to beat, and without
+it the improvement cannot be attributed.
