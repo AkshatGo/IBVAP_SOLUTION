@@ -91,7 +91,7 @@ class VirtualFence:
         self._inside[name] = set()
 
     def add_default_zone(self, frame_width: int = 640, frame_height: int = 480):
-        """Add a default perimeter fence."""
+        """Add a default single perimeter fence."""
         margin_x = int(frame_width * 0.28)
         margin_y = int(frame_height * 0.25)
         polygon = [
@@ -102,6 +102,46 @@ class VirtualFence:
         ]
         self.add_zone("Zone-1", polygon, severity="high",
                        description="Primary perimeter zone")
+
+    def add_demo_preset(self, frame_width: int = 640, frame_height: int = 480):
+        """Add a multi-zone demo preset: pedestrian zone + vehicle lane + critical zone.
+
+        This gives a richer demo where different zones have different
+        severity levels and you can show multi-zone behavior live.
+        """
+        # Pedestrian zone — upper-center area
+        ped_margin_x = int(frame_width * 0.30)
+        ped_margin_y = int(frame_height * 0.20)
+        pedestrian_zone = [
+            (ped_margin_x, ped_margin_y),
+            (frame_width - ped_margin_x, ped_margin_y),
+            (frame_width - ped_margin_x, int(frame_height * 0.55)),
+            (ped_margin_x, int(frame_height * 0.55)),
+        ]
+        self.add_zone("Pedestrian Zone", pedestrian_zone, severity="high",
+                       description="Restricted pedestrian area — high alert on intrusion")
+
+        # Vehicle lane — bottom strip
+        vehicle_zone = [
+            (0, int(frame_height * 0.70)),
+            (frame_width, int(frame_height * 0.70)),
+            (frame_width, frame_height - 10),
+            (0, frame_height - 10),
+        ]
+        self.add_zone("Vehicle Lane", vehicle_zone, severity="medium",
+                       description="Vehicle passage lane — medium alert")
+
+        # Critical zone — small inner area
+        crit_cx, crit_cy = frame_width // 2, int(frame_height * 0.38)
+        crit_half = 40
+        critical_zone = [
+            (crit_cx - crit_half, crit_cy - crit_half),
+            (crit_cx + crit_half, crit_cy - crit_half),
+            (crit_cx + crit_half, crit_cy + crit_half),
+            (crit_cx - crit_half, crit_cy + crit_half),
+        ]
+        self.add_zone("Critical Zone", critical_zone, severity="critical",
+                       description="Inner critical area — any intrusion is critical")
 
     def check_intrusion(self, track_id: int, center: Tuple[int, int],
                         object_class: str = "unknown",
