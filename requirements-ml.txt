@@ -1,21 +1,13 @@
-# IBVAP — ML, dataset and test dependencies
+# IBVAP — dataset preparation and test dependencies.
 #
-# Everything requirements.txt leaves out because Streamlit Cloud's free
-# tier cannot fit it. Needed for the real edge pipeline (src/edge/),
-# the dataset and training scripts (scripts/), and the test suite.
+# requirements.txt already carries torch/ultralytics/easyocr, since the
+# hosted demo runs real detection. This file adds what only local dataset
+# work and the test suite need.
 #
-#   pip install -r requirements.txt -r requirements-ml.txt
+#   pip install -r requirements-ml.txt
 #
-# -r pulls in the core set, so installing this file alone is enough.
+# -r pulls in the core set, so this file alone is enough.
 -r requirements.txt
-
-# Detection — src/edge/detector.py, scripts/train.py
-ultralytics>=8.0.0
-torch>=2.0.0
-torchvision>=0.15.0
-
-# OCR / ANPR — src/edge/anpr.py (pipeline degrades gracefully without it)
-easyocr>=1.7.0
 
 # Dataset augmentation — scripts/anpr_augmentation.py
 albumentations>=1.3.0

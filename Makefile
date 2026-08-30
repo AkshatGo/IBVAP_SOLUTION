@@ -55,11 +55,11 @@ help:
 # ============================================================
 
 install:
-	@echo "Installing all dependencies (core + ML)..."
-	pip install -r requirements.txt -r requirements-ml.txt
+	@echo "Installing all dependencies..."
+	pip install -r requirements-ml.txt
 
 install-core:
-	@echo "Installing core dependencies only (matches Streamlit Cloud)..."
+	@echo "Installing core deps only (exactly what Streamlit Cloud installs)..."
 	pip install -r requirements.txt
 
 test:
