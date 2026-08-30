@@ -124,9 +124,10 @@ python -m src.edge.hashchain verify
 make test          # or: python -m pytest
 ```
 
-98 tests covering the pipeline contract (Detection → Tracker → Fence →
-ANPR → HashChain). They use stubbed detections, so the suite runs in ~2
-seconds and downloads no model weights.
+128 tests covering the pipeline contract (Detection → Tracker → Fence →
+ANPR → HashChain) and every REST endpoint plus the WebSocket. They use
+stubbed detections, so the suite runs in ~4 seconds and downloads no model
+weights.
 
 ---
 
