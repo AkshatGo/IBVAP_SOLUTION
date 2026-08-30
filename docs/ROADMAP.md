@@ -41,7 +41,7 @@
 | Priority | Dataset | Purpose | Size | Why |
 |---|---|---|---|---|
 | **1** | **IDD (Indian Driving Dataset)** — Detection subset | Person/vehicle detection on Indian roads | ~2.5 GB | Directly matches deployment domain — Indian roads, mixed traffic, non-Western vehicle types (autos, tempos) that COCO-pretrained YOLO under-detects |
-| **2** | **Indian Number Plates** + **UFPR-ALPR** | Plate localizer fine-tuning | ~4.5 GB | Current ANPR uses classical CV for plate localization — weakest accuracy component; trained YOLO plate-detector fixes it directly |
+| **2** | **Kaggle plate sets** (see §2.4) + **UFPR-ALPR** | Plate localizer fine-tuning | ~0.4 GB obtained | Current ANPR uses classical CV for plate localization — weakest accuracy component; trained YOLO plate-detector fixes it directly |
 | **3** | **ExDark** | Low-light detection robustness | ~0.8 GB | Answers the "honest night claim" — model trained on dark imagery raises real detection confidence at night |
 
 ### 2.2 All Cataloged Datasets
@@ -60,6 +60,23 @@
 | BDD100K | BDD | Vehicle Tracking | 100.0 GB | Cut (too large) |
 | WIDER FACE | WIDER | Face Detection | 3.5 GB | Optional |
 | Custom Border | — | Custom | TBD | Not collected yet |
+
+### 2.4 Corrections found when actually fetching the data
+
+Two entries in the table above were wrong, discovered only by downloading:
+
+- **"Indian Number Plates (DataCluster Labs)" is not 10,000 images.** What
+  Kaggle hosts (`dataclusterlabs/indian-number-plates-dataset`) is a free
+  *sample* of a commercial product: **47 annotated images** — 27 full
+  photos plus 21 OCR crops. Useful as domain-matched data, but it is not a
+  training set on its own. The bulk of the plate data therefore comes from
+  `andrewmvd/car-plate-detection` (433 images, CC0), giving **460 images
+  total** after merging.
+- **IDD does *not* require the manual signup** at idd.insaan.iiit.ac.in
+  that earlier notes claimed. Kaggle carries mirrors, and
+  `redzapdos123/indian-driving-dataset-detections-yolov11` ships
+  IDD-Detection **already in YOLO format** with a data.yaml — no
+  conversion step needed at all. It is 21.9 GB.
 
 ### 2.3 Explicitly Cut (state as future work)
 
@@ -145,9 +162,22 @@ data/
 detection run does the freeze warm-up as two stages automatically.
 
 **Compute:** Free-tier Kaggle (30 GPU-hrs/week) or Google Colab T4 is
-sufficient. Note the local dev machine has an RTX 3050 but a **CPU-only
-torch build**, so `--device auto` resolves to CPU there; installing a CUDA
-torch build or using Kaggle/Colab is required for a realistic run.
+sufficient. The local dev machine has an RTX 3050 (4GB) but ships a
+**CPU-only torch build**, so `--device auto` resolves to CPU until a CUDA
+build is installed.
+
+**Measured CPU rate (Ryzen 5 5600H, 12 threads): 0.29 s per image per
+epoch** — 369 training images took 107 s/epoch at 640px, batch 8. That
+scales the feasibility question directly:
+
+| Dataset | Images | Per epoch | 50 epochs on CPU |
+|---|---|---|---|
+| Plate localizer | 460 | ~1.8 min | ~90 min — feasible |
+| IDD-Detection | ~40,000 | ~3.2 hours | ~6.7 days — **not feasible** |
+
+So the plate model can be trained on CPU; the detector cannot. Either
+install a CUDA build for the 3050, train on a deduplicated subset, or use
+Kaggle's T4.
 
 ### Evaluation Metrics (for Grand Finale)
 

@@ -112,22 +112,40 @@ def parse_voc(xml_path: Path):
     return width, height, boxes
 
 
-def collect_voc(root: Path):
-    """Pair each image with its XML annotation."""
-    image_dirs = [root / "images", root / "JPEGImages", root]
-    ann_dirs = [root / "annotations", root / "Annotations", root]
+def collect_voc(root: Path, images_dir: Path = None, ann_dir: Path = None):
+    """Pair each image with its XML annotation.
 
-    images_dir = next((d for d in image_dirs if d.is_dir()), None)
-    ann_dir = next((d for d in ann_dirs if d.is_dir()), None)
+    The common layouts put images and annotations in sibling folders under
+    one root, which the guesses below cover. Real datasets don't always
+    oblige — the DataCluster Indian plates set keeps them in entirely
+    separate subtrees — so --images-dir / --annotations-dir override the
+    search when guessing fails.
+    """
+    if images_dir is None:
+        images_dir = next(
+            (d for d in (root / "images", root / "JPEGImages", root) if d.is_dir()),
+            None,
+        )
+    if ann_dir is None:
+        ann_dir = next(
+            (d for d in (root / "annotations", root / "Annotations", root) if d.is_dir()),
+            None,
+        )
     if images_dir is None or ann_dir is None:
-        raise SystemExit(f"Could not find image/annotation folders under {root}")
+        raise SystemExit(
+            f"Could not find image/annotation folders under {root}. "
+            "Pass --images-dir and --annotations-dir explicitly."
+        )
+
+    # Index annotations by stem so a nested annotation tree still pairs up.
+    annotations = {x.stem: x for x in ann_dir.rglob("*.xml")}
 
     pairs = []
-    for image_path in sorted(images_dir.iterdir()):
+    for image_path in sorted(images_dir.rglob("*")):
         if image_path.suffix not in IMAGE_SUFFIXES:
             continue
-        xml_path = ann_dir / f"{image_path.stem}.xml"
-        if xml_path.exists():
+        xml_path = annotations.get(image_path.stem)
+        if xml_path is not None:
             pairs.append((image_path, xml_path))
     return pairs
 
@@ -171,11 +189,14 @@ def collect_ufpr(root: Path):
 # --- conversion --------------------------------------------------------
 
 def convert(root: Path, fmt: str, out_root: Path, val_split: float,
-            seed: int, ground_truth_out: Path | None):
+            seed: int, ground_truth_out: Path | None,
+            images_dir: Path = None, ann_dir: Path = None,
+            prefix: str = None):
     if not root.is_dir():
         raise SystemExit(f"Dataset root not found: {root}")
 
-    pairs = collect_voc(root) if fmt == "voc" else collect_ufpr(root)
+    pairs = (collect_voc(root, images_dir, ann_dir) if fmt == "voc"
+             else collect_ufpr(root))
     if not pairs:
         raise SystemExit(
             f"No annotated images found under {root} for format '{fmt}'. "
@@ -212,8 +233,11 @@ def convert(root: Path, fmt: str, out_root: Path, val_split: float,
                 empty += 1
                 continue
 
-            # Prefix by source so the two datasets can share one tree.
-            stem = f"{fmt}_{image_path.stem}"
+            # Prefix by source so several datasets can share one tree.
+            # Spaces and parentheses in filenames (the Indian set has both)
+            # are normalised out — they break YOLO's image/label pairing.
+            safe = image_path.stem.replace(" ", "_").replace("(", "").replace(")", "")
+            stem = f"{prefix or fmt}_{safe}"
             filename = f"{stem}{image_path.suffix}"
             shutil.copy2(image_path, img_out / filename)
 
@@ -225,7 +249,8 @@ def convert(root: Path, fmt: str, out_root: Path, val_split: float,
                 # Only val strings matter: they are what evaluate.py scores.
                 plate_strings[filename] = plate
 
-    print(f"{fmt.upper()} -> YOLO: {counts['train']} train, {counts['val']} val images")
+    print(f"{(prefix or fmt).upper()} -> YOLO: {counts['train']} train, "
+          f"{counts['val']} val images")
     if empty:
         print(f"  skipped {empty} images with no usable plate box")
 
@@ -273,10 +298,20 @@ def main():
                         default=Path("data/anpr/plates_val.json"),
                         help="Where to write val plate strings for "
                              "scripts/evaluate.py anpr")
+    parser.add_argument("--images-dir", type=Path, default=None,
+                        help="Override image folder (when it is not a "
+                             "sibling of the annotations)")
+    parser.add_argument("--annotations-dir", type=Path, default=None,
+                        help="Override annotation folder")
+    parser.add_argument("--prefix", type=str, default=None,
+                        help="Filename prefix for this source; defaults to the "
+                             "format name. Set it when merging several "
+                             "datasets that share a format.")
     args = parser.parse_args()
 
     convert(args.root, args.format, args.out_root, args.val_split,
-            args.seed, args.ground_truth_out)
+            args.seed, args.ground_truth_out,
+            args.images_dir, args.annotations_dir, args.prefix)
     write_data_yaml(args.out_root)
 
 
