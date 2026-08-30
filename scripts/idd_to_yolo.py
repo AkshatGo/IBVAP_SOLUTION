@@ -29,6 +29,9 @@ import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 # --- class mapping -----------------------------------------------------
 # Left side: IDD's original label names (verify against your download's
 # label list — IDD's taxonomy is broader than this; unmapped classes are
@@ -122,7 +125,59 @@ def to_yolo_line(class_name: str, xmin, ymin, xmax, ymax, img_w, img_h) -> str:
     return f"{cls_idx} {cx:.6f} {cy:.6f} {w:.6f} {h:.6f}"
 
 
-def convert_dataset(idd_root: Path, out_root: Path, val_split: float, seed: int = 42):
+# --- near-duplicate filtering -----------------------------------------
+# IDD is dashcam-sourced: at 30fps a vehicle barely moves between frames, so
+# a naive conversion produces thousands of near-identical images. They cost
+# training time and bias the val split (a frame 3 frames away from its
+# training twin is not a real held-out example). A perceptual hash drops
+# them while keeping genuinely distinct scenes.
+
+def _dhash(image_path: Path, hash_size: int = 8):
+    """Difference hash: compare each pixel to its right-hand neighbour.
+
+    Implemented directly on numpy rather than pulling in the `imagehash`
+    package — it is eight lines, and the repo keeps requirements.txt to
+    what running code actually imports.
+    """
+    image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        return None
+    resized = cv2.resize(image, (hash_size + 1, hash_size),
+                         interpolation=cv2.INTER_AREA)
+    return resized[:, 1:] > resized[:, :-1]
+
+
+def _hamming(a, b) -> int:
+    return int(np.count_nonzero(a != b))
+
+
+def deduplicate(image_files, distance: int):
+    """Drop frames too similar to the last kept one.
+
+    Compared against the last *kept* frame rather than the immediately
+    previous one, so a slow pan doesn't ratchet through in tiny steps that
+    each pass the threshold while the sequence as a whole is redundant.
+
+    Input must be in temporal (filename) order for this to mean anything.
+    """
+    kept, last_hash, dropped = [], None, 0
+    for image_path in image_files:
+        current = _dhash(image_path)
+        if current is None:
+            continue  # unreadable image
+        if last_hash is not None and _hamming(current, last_hash) < distance:
+            dropped += 1
+            continue
+        kept.append(image_path)
+        last_hash = current
+
+    print(f"Deduplication: kept {len(kept)}, dropped {dropped} near-identical "
+          f"frames (hamming distance < {distance})")
+    return kept
+
+
+def convert_dataset(idd_root: Path, out_root: Path, val_split: float, seed: int = 42,
+                    dedup_distance: int = 5):
     images_dir = idd_root / "JPEGImages"
     ann_dir = idd_root / "Annotations"
 
@@ -137,12 +192,18 @@ def convert_dataset(idd_root: Path, out_root: Path, val_split: float, seed: int 
     if not image_files:
         raise FileNotFoundError(f"No .jpg images found under {images_dir}")
 
+    # Dedup runs on the sorted (temporal) order, before the shuffle below —
+    # comparing shuffled frames to each other would be meaningless.
+    if dedup_distance > 0:
+        image_files = deduplicate(image_files, dedup_distance)
+
     random.seed(seed)
     random.shuffle(image_files)
     n_val = int(len(image_files) * val_split)
     val_set = set(image_files[:n_val])
 
     kept, skipped_no_boxes = 0, 0
+    split_counts = {"train": 0, "val": 0}
 
     for img_path in image_files:
         xml_path = ann_dir / (img_path.stem + ".xml")
@@ -157,6 +218,7 @@ def convert_dataset(idd_root: Path, out_root: Path, val_split: float, seed: int 
             # accidental inclusion.
 
         split = "val" if img_path in val_set else "train"
+        split_counts[split] += 1
 
         out_img_dir = out_root / "images" / split
         out_lbl_dir = out_root / "labels" / split
@@ -170,7 +232,10 @@ def convert_dataset(idd_root: Path, out_root: Path, val_split: float, seed: int 
 
         kept += 1
 
-    print(f"Converted {kept} images ({n_val} val / {kept - n_val} train). "
+    # Count the actual splits: n_val is computed before images with no
+    # target-class boxes are dropped, so it overstates the val set.
+    print(f"Converted {kept} images ({split_counts['train']} train / "
+          f"{split_counts['val']} val). "
           f"Skipped {skipped_no_boxes} images with no target-class boxes.")
 
     write_data_yaml(out_root)
@@ -195,9 +260,13 @@ def main():
                          help="Output folder, matches Phase 3 layout in the implementation plan")
     parser.add_argument("--val-split", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--dedup-distance", type=int, default=5,
+                         help="Drop frames within this hamming distance of the "
+                              "last kept one; 0 disables deduplication")
     args = parser.parse_args()
 
-    convert_dataset(args.idd_root, args.out_root, args.val_split, args.seed)
+    convert_dataset(args.idd_root, args.out_root, args.val_split, args.seed,
+                    args.dedup_distance)
 
 
 if __name__ == "__main__":
