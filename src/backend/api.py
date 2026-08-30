@@ -18,8 +18,23 @@ try:
 except ImportError:
     raise ImportError("fastapi not installed. Run: pip install fastapi uvicorn[standard]")
 
+from pydantic import BaseModel
+
 from ..edge.pipeline import IBVAPPipeline
 from ..edge.hashchain import HashChain
+
+
+class FenceZoneRequest(BaseModel):
+    """Body of POST /api/fences.
+
+    Declaring the shape rather than indexing a raw dict means a malformed
+    body returns 422 with a field-level error, instead of raising KeyError
+    and surfacing as a 500.
+    """
+    name: str
+    polygon: List[List[int]]
+    severity: str = "high"
+    description: str = ""
 
 
 def create_app(pipeline: Optional[IBVAPPipeline] = None) -> FastAPI:
@@ -88,13 +103,8 @@ def create_app(pipeline: Optional[IBVAPPipeline] = None) -> FastAPI:
     @app.post("/api/signal/thresholds")
     async def update_signal_thresholds(thresholds: dict):
         """Update signal-loss thresholds at runtime (for live demo tuning)."""
-        import json, os
-        config_path = os.path.join("config", "signal_thresholds.json")
-        os.makedirs(os.path.dirname(config_path), exist_ok=True)
-        with open(config_path, "w") as f:
-            json.dump(thresholds, f, indent=2)
-        pipeline.signal_detector.reload_thresholds()
-        return {"status": "ok", "thresholds": pipeline.signal_detector.get_thresholds()}
+        applied = pipeline.signal_detector.update_thresholds(thresholds)
+        return {"status": "ok", "thresholds": applied}
 
     @app.get("/api/fences")
     async def get_fences():
@@ -102,13 +112,16 @@ def create_app(pipeline: Optional[IBVAPPipeline] = None) -> FastAPI:
         return {"zones": pipeline.fence.get_all_zones()}
 
     @app.post("/api/fences")
-    async def add_fence(zone: dict):
+    async def add_fence(zone: FenceZoneRequest):
         """Add a virtual fence zone."""
+        if len(zone.polygon) < 3:
+            raise HTTPException(status_code=422,
+                                detail="A fence polygon needs at least 3 points")
         pipeline.fence.add_zone(
-            name=zone["name"],
-            polygon=zone["polygon"],
-            severity=zone.get("severity", "high"),
-            description=zone.get("description", ""),
+            name=zone.name,
+            polygon=zone.polygon,
+            severity=zone.severity,
+            description=zone.description,
         )
         return {"status": "ok", "zones": pipeline.fence.get_all_zones()}
 

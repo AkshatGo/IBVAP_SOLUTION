@@ -31,6 +31,19 @@ def _load_overrides() -> dict:
     return {}
 
 
+def _save_overrides(thresholds: dict) -> str:
+    """Write overrides to the same path _load_overrides reads.
+
+    Writing to a path derived from the module rather than the working
+    directory matters: the API server may be started from anywhere, and a
+    write that lands somewhere the loader never looks is a silent no-op.
+    """
+    os.makedirs(os.path.dirname(_THRESHOLDS_PATH), exist_ok=True)
+    with open(_THRESHOLDS_PATH, "w") as f:
+        json.dump(thresholds, f, indent=2)
+    return _THRESHOLDS_PATH
+
+
 @dataclass
 class CameraStatus:
     """Status of a single camera."""
@@ -106,6 +119,16 @@ class SignalLossDetector:
             self.brightness_drop_threshold = overrides["brightness_drop_threshold"]
         if "consecutive_black_needed" in overrides:
             self.consecutive_black_needed = overrides["consecutive_black_needed"]
+
+    def update_thresholds(self, thresholds: dict) -> dict:
+        """Persist new thresholds and apply them immediately.
+
+        Backs the live-tuning API endpoint: the write and the reload use one
+        canonical path, so a POST always takes effect.
+        """
+        _save_overrides(thresholds)
+        self.reload_thresholds()
+        return self.get_thresholds()
 
     def register_camera(self, camera_id: str):
         """Register a camera for monitoring."""
