@@ -10,7 +10,7 @@ import json
 import os
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 @dataclass
@@ -108,7 +108,7 @@ class HashChain:
         """Add a new event to the chain and persist to disk."""
         record = EventRecord(
             event_id=event_id,
-            timestamp=timestamp or datetime.utcnow().isoformat() + "Z",
+            timestamp=timestamp or datetime.now(timezone.utc).isoformat(),
             event_type=event_type,
             site_id=site_id,
             camera_id=camera_id,
