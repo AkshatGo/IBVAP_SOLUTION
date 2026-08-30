@@ -1,11 +1,34 @@
 """
 Signal Loss Detector — Alerts when camera feeds are lost or tampered.
 Critical for border surveillance: a blinded camera is itself an alert.
+
+Thresholds are read from src.config so they can be tuned live during
+a demo without redeploying (e.g. via a config file or environment
+variables that override the dataclass defaults).
 """
+import os
+import json
 import time
 import numpy as np
 from typing import Dict, Optional
 from dataclasses import dataclass
+
+
+# Optional: load overrides from config/signal_thresholds.json
+_THRESHOLDS_PATH = os.path.join(
+    os.path.dirname(__file__), "..", "..", "config", "signal_thresholds.json"
+)
+
+
+def _load_overrides() -> dict:
+    """Load threshold overrides from JSON file if it exists."""
+    if os.path.exists(_THRESHOLDS_PATH):
+        try:
+            with open(_THRESHOLDS_PATH) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
 
 
 @dataclass
@@ -38,6 +61,16 @@ class SignalLossDetector:
     2. Frame is all-black (possible tampering)
     3. Frame is all-white (possible sensor failure)
     4. Sudden brightness drop (possible jamming)
+
+    Thresholds can be overridden at runtime by writing to
+    config/signal_thresholds.json:
+    {
+      "timeout_seconds": 3.0,
+      "black_threshold": 5.0,
+      "white_threshold": 250.0,
+      "brightness_drop_threshold": 0.7,
+      "consecutive_black_needed": 3
+    }
     """
 
     def __init__(
@@ -46,12 +79,33 @@ class SignalLossDetector:
         black_threshold: float = 5.0,
         white_threshold: float = 250.0,
         brightness_drop_threshold: float = 0.7,
+        consecutive_black_needed: int = 3,
     ):
-        self.timeout_seconds = timeout_seconds
-        self.black_threshold = black_threshold
-        self.white_threshold = white_threshold
-        self.brightness_drop_threshold = brightness_drop_threshold
+        overrides = _load_overrides()
+        self.timeout_seconds = overrides.get("timeout_seconds", timeout_seconds)
+        self.black_threshold = overrides.get("black_threshold", black_threshold)
+        self.white_threshold = overrides.get("white_threshold", white_threshold)
+        self.brightness_drop_threshold = overrides.get(
+            "brightness_drop_threshold", brightness_drop_threshold
+        )
+        self.consecutive_black_needed = overrides.get(
+            "consecutive_black_needed", consecutive_black_needed
+        )
         self.cameras: Dict[str, CameraStatus] = {}
+
+    def reload_thresholds(self):
+        """Hot-reload thresholds from config file without restarting."""
+        overrides = _load_overrides()
+        if "timeout_seconds" in overrides:
+            self.timeout_seconds = overrides["timeout_seconds"]
+        if "black_threshold" in overrides:
+            self.black_threshold = overrides["black_threshold"]
+        if "white_threshold" in overrides:
+            self.white_threshold = overrides["white_threshold"]
+        if "brightness_drop_threshold" in overrides:
+            self.brightness_drop_threshold = overrides["brightness_drop_threshold"]
+        if "consecutive_black_needed" in overrides:
+            self.consecutive_black_needed = overrides["consecutive_black_needed"]
 
     def register_camera(self, camera_id: str):
         """Register a camera for monitoring."""
@@ -86,7 +140,7 @@ class SignalLossDetector:
         # Check for all-black frame (possible jamming/cover)
         if avg_brightness < self.black_threshold:
             cam.consecutive_black += 1
-            if cam.consecutive_black >= 3:
+            if cam.consecutive_black >= self.consecutive_black_needed:
                 return self._trigger_loss(camera_id, cam, "black_frame",
                                            f"Camera showing black frames "
                                            f"(brightness={avg_brightness:.1f}). "
@@ -161,3 +215,13 @@ class SignalLossDetector:
     def get_offline_count(self) -> int:
         """Count of offline cameras."""
         return sum(1 for cam in self.cameras.values() if not cam.is_online)
+
+    def get_thresholds(self) -> dict:
+        """Return current threshold values (for API display)."""
+        return {
+            "timeout_seconds": self.timeout_seconds,
+            "black_threshold": self.black_threshold,
+            "white_threshold": self.white_threshold,
+            "brightness_drop_threshold": self.brightness_drop_threshold,
+            "consecutive_black_needed": self.consecutive_black_needed,
+        }

@@ -1,0 +1,7 @@
+{
+  "timeout_seconds": 5.0,
+  "black_threshold": 5.0,
+  "white_threshold": 250.0,
+  "brightness_drop_threshold": 0.7,
+  "consecutive_black_needed": 3
+}
