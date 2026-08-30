@@ -1,11 +1,14 @@
 """
-Hash Chain — Tamper-evident event logging.
+Hash Chain — Tamper-evident event logging with JSONL persistence.
+
 Each event includes the SHA-256 hash of the previous event,
-creating an immutable audit trail.
+creating an immutable audit trail. Events are appended to a
+JSONL file so they survive process restarts.
 """
 import hashlib
 import json
-from typing import List, Dict, Optional
+import os
+from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -36,8 +39,22 @@ class EventRecord:
             "hash": self.hash,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "EventRecord":
+        return cls(
+            event_id=d["event_id"],
+            timestamp=d["timestamp"],
+            event_type=d["event_type"],
+            site_id=d["site_id"],
+            camera_id=d["camera_id"],
+            severity=d["severity"],
+            payload=d["payload"],
+            prev_hash=d.get("prev_hash", ""),
+            hash=d.get("hash", ""),
+        )
+
     def compute_hash(self) -> str:
-        """Compute SHA-256 hash of this record (excluding hash field)."""
+        """Compute SHA-256 hash of this record (excluding hash and prev_hash)."""
         d = self.to_dict()
         d.pop("hash", None)
         d.pop("prev_hash", None)
@@ -47,15 +64,36 @@ class EventRecord:
 
 class HashChain:
     """
-    Immutable, tamper-evident event log.
-    
+    Immutable, tamper-evident event log with JSONL persistence.
+
     Each record's hash includes the previous record's hash,
-    so editing any past record breaks the chain.
+    so editing any past record breaks the chain. Events are
+    appended to a JSONL file so they survive process restarts.
     """
 
-    def __init__(self):
+    def __init__(self, path: str = "data/hashchain.jsonl"):
+        self.path = path
+        os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
         self.chain: List[EventRecord] = []
         self._head_hash = "0" * 64  # genesis hash
+        self._load()
+
+    def _load(self):
+        """Load existing chain from JSONL file."""
+        if not os.path.exists(self.path):
+            return
+        with open(self.path) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                    self.chain.append(EventRecord.from_dict(d))
+                except (json.JSONDecodeError, KeyError):
+                    continue  # skip corrupted lines
+        if self.chain:
+            self._head_hash = self.chain[-1].hash
 
     def add_event(
         self,
@@ -67,7 +105,7 @@ class HashChain:
         payload: dict,
         timestamp: Optional[str] = None,
     ) -> EventRecord:
-        """Add a new event to the chain."""
+        """Add a new event to the chain and persist to disk."""
         record = EventRecord(
             event_id=event_id,
             timestamp=timestamp or datetime.utcnow().isoformat() + "Z",
@@ -81,9 +119,14 @@ class HashChain:
         record.hash = record.compute_hash()
         self._head_hash = record.hash
         self.chain.append(record)
+
+        # Persist to JSONL
+        with open(self.path, "a") as f:
+            f.write(json.dumps(record.to_dict(), default=str) + "\n")
+
         return record
 
-    def verify(self) -> tuple:
+    def verify(self) -> Tuple[bool, Optional[int]]:
         """
         Verify the integrity of the entire chain.
         Returns (is_valid: bool, broken_at: Optional[int])
@@ -141,3 +184,59 @@ class HashChain:
 
     def __getitem__(self, idx):
         return self.chain[idx]
+
+
+# ── CLI entry point ──────────────────────────────────────────────
+# Run: python -m src.edge.hashchain [verify|dump|corrupt]
+def main():
+    import sys
+
+    usage = (
+        "Usage: python -m src.edge.hashchain <command>\n"
+        "  verify  — Verify chain integrity and print result\n"
+        "  dump    — Print all events as JSON\n"
+        "  corrupt — Intentionally corrupt one record to demo chain break\n"
+    )
+
+    if len(sys.argv) < 2:
+        print(usage)
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    chain = HashChain()
+
+    if cmd == "verify":
+        is_valid, broken_at = chain.verify()
+        if is_valid:
+            print(f"✅ Chain VALID — {len(chain)} events verified")
+        else:
+            print(f"❌ Chain BROKEN at record index {broken_at}")
+            print(f"   Record: {json.dumps(chain[broken_at].to_dict(), indent=2)}")
+        sys.exit(0 if is_valid else 1)
+
+    elif cmd == "dump":
+        print(chain.export_json())
+        sys.exit(0)
+
+    elif cmd == "corrupt":
+        if len(chain) < 2:
+            print("Chain too short to corrupt (need at least 2 events)")
+            sys.exit(1)
+        # Corrupt the second-to-last record's payload
+        idx = len(chain) - 2
+        chain.chain[idx].payload["TAMPERED"] = True
+        chain.chain[idx].hash = chain.chain[idx].compute_hash()
+        # Rewrite the file
+        with open(chain.path, "w") as f:
+            for rec in chain.chain:
+                f.write(json.dumps(rec.to_dict(), default=str) + "\n")
+        print(f"🔓 Corrupted record at index {idx} — run 'verify' to see the break")
+        sys.exit(0)
+
+    else:
+        print(usage)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
