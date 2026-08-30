@@ -43,10 +43,26 @@ def load_yolo():
 
 @st.cache_resource
 def load_hog():
-    """Load OpenCV HOG person detector as fallback."""
+    """Load OpenCV's HOG person detector as fallback.
+
+    Returns None on OpenCV 5+, which removed HOGDescriptor entirely. The
+    hosted demo has no torch, so this fallback is its *primary* path — a
+    hard failure here takes the whole public page down, which is why it
+    degrades instead of raising.
+    """
+    if not hasattr(cv2, "HOGDescriptor"):
+        return None
     hog = cv2.HOGDescriptor()
     hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
     return hog
+
+
+@st.cache_resource
+def load_motion_detector():
+    """Last-resort detector: background subtraction, available in every
+    OpenCV version. Detects movement, not people — labelled as such."""
+    return cv2.createBackgroundSubtractorMOG2(history=200, varThreshold=32,
+                                              detectShadows=False)
 
 @st.cache_resource
 def load_ocr():
@@ -57,14 +73,22 @@ def load_ocr():
     except Exception:
         return None
 
-# Try to load YOLO, fallback to HOG
+# Detection engine, best available first: YOLO -> HOG -> motion.
 USE_YOLO = False
+hog = None
+motion = None
 try:
     model = load_yolo()
     USE_YOLO = True
+    ENGINE = "YOLOv8"
 except Exception:
     model = None
     hog = load_hog()
+    if hog is not None:
+        ENGINE = "HOG"
+    else:
+        motion = load_motion_detector()
+        ENGINE = "Motion"
 
 ocr_reader = load_ocr()
 
@@ -178,8 +202,8 @@ def detect_frame(frame):
                     "confidence": conf, "bbox": (x1, y1, x2, y2),
                     "center": (cx, cy), "in_fence": in_fence,
                 })
-    else:
-        # HOG fallback
+    elif hog is not None:
+        # HOG fallback — OpenCV 4.x only
         boxes, weights = hog.detectMultiScale(frame, winStride=(8, 8),
                                                padding=(4, 4), scale=1.05)
         for (x, y, w, h), conf in zip(boxes, weights):
@@ -188,6 +212,26 @@ def detect_frame(frame):
             detections.append({
                 "class": "person", "class_id": 0,
                 "confidence": float(conf[0]),
+                "bbox": (x, y, x + w, y + h),
+                "center": (cx, cy), "in_fence": in_fence,
+            })
+    elif motion is not None:
+        # Motion fallback — movement, not classification. Confidence is a
+        # blob-area heuristic, not a model score; do not present it as one.
+        mask = motion.apply(frame)
+        _, mask = cv2.threshold(mask, 200, 255, cv2.THRESH_BINARY)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:8]:
+            area = cv2.contourArea(contour)
+            if area < 400:
+                continue
+            x, y, w, h = cv2.boundingRect(contour)
+            cx, cy = x + w // 2, y + h // 2
+            in_fence = is_in_fence((cx, cy))
+            detections.append({
+                "class": "motion", "class_id": 0,
+                "confidence": min(0.99, area / (W * H) * 8),
                 "bbox": (x, y, x + w, y + h),
                 "center": (cx, cy), "in_fence": in_fence,
             })
@@ -316,7 +360,7 @@ def generate_demo_frame(tick):
     )
     # Detection count bar
     cv2.rectangle(frame, (0, H - 24), (W, H), (15, 15, 25), -1)
-    cv2.putText(frame, f"Detection engine: {'YOLOv8' if USE_YOLO else 'HOG'}  |  Objects: 2",
+    cv2.putText(frame, f"Detection engine: {ENGINE}  |  Objects: 2",
                 (8, H - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (140, 140, 140), 1, cv2.LINE_AA)
 
     return frame, in_fence
@@ -334,8 +378,10 @@ with st.sidebar:
     # Model status
     if USE_YOLO:
         st.success("✅ YOLOv8 loaded")
-    else:
+    elif ENGINE == "HOG":
         st.warning("⚠️ Using HOG fallback (no torch)")
+    else:
+        st.warning("⚠️ Using motion fallback (no torch, OpenCV 5+)")
     if ocr_reader:
         st.success("✅ EasyOCR loaded")
     else:

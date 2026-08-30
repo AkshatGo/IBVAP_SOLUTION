@@ -1,7 +1,7 @@
 # IBVAP Makefile
 # Common commands for development, demo, and deployment
 
-.PHONY: help install test run-server run-dashboard demo verify-chain corrupt-chain \
+.PHONY: help install install-core test run-server run-dashboard demo verify-chain corrupt-chain \
         docker-up docker-down docker-build docker-logs \
         convert-idd convert-exdark darken-detection convert-plates augment-anpr \
         train-detection train-plate eval-detection eval-anpr eval-threshold \
@@ -13,7 +13,8 @@ help:
 	@echo "=================================================="
 	@echo ""
 	@echo "Setup:"
-	@echo "  make install        Install Python dependencies"
+	@echo "  make install        Install all dependencies (core + ML)"
+	@echo "  make install-core   Core only — what Streamlit Cloud installs"
 	@echo "  make test           Run the test suite (no models downloaded)"
 	@echo ""
 	@echo "Run Services:"
@@ -54,7 +55,11 @@ help:
 # ============================================================
 
 install:
-	@echo "Installing dependencies..."
+	@echo "Installing all dependencies (core + ML)..."
+	pip install -r requirements.txt -r requirements-ml.txt
+
+install-core:
+	@echo "Installing core dependencies only (matches Streamlit Cloud)..."
 	pip install -r requirements.txt
 
 test:
