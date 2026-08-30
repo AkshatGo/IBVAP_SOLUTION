@@ -108,6 +108,11 @@ models/checkpoints/
 outputs/
 logs/
 runs/
+
+# Trained weights ARE versioned — they cost GPU-hours and cannot be
+# regenerated without the datasets. ONNX exports are not: they rebuild
+# from the .pt in seconds via scripts/export_onnx.py.
+models/onnx/
 wandb/
 
 # Demo recordings
@@ -154,4 +159,9 @@ mlruns/
 # Datasets and training artifacts (regenerate with scripts/)
 data/raw/
 runs/
+
+# Trained weights ARE versioned — they cost GPU-hours and cannot be
+# regenerated without the datasets. ONNX exports are not: they rebuild
+# from the .pt in seconds via scripts/export_onnx.py.
+models/onnx/
 *.log

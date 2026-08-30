@@ -29,7 +29,16 @@ pipeline at one with:
 """
 
 import argparse
+import multiprocessing
+import sys
 from pathlib import Path
+
+# Python 3.14 made "forkserver" the default start method on Linux, which
+# PyTorch's DataLoader workers do not survive — they die during forkserver
+# authentication with ConnectionResetError before the first batch. Force
+# "fork" before torch is imported anywhere.
+if sys.platform == "linux" and multiprocessing.get_start_method(allow_none=True) != "fork":
+    multiprocessing.set_start_method("fork", force=True)
 
 
 def _resolve_device(requested: str) -> str:

@@ -24,7 +24,7 @@ import numpy as np
 
 
 def export(weights: Path, imgsz: int, opset: int, simplify: bool, half: bool,
-           dynamic: bool, out_dir: Path):
+           dynamic: bool, out_dir: Path, name: str = None):
     from ultralytics import YOLO
 
     if not weights.exists():
@@ -46,7 +46,18 @@ def export(weights: Path, imgsz: int, opset: int, simplify: bool, half: bool,
 
     exported_path = Path(exported)
     out_dir.mkdir(parents=True, exist_ok=True)
-    destination = out_dir / exported_path.name
+
+    # Every Ultralytics run produces "best.pt", so a naive move drops each
+    # export on top of the last one. Name the artifact after the run
+    # directory (runs/ibvap_plate/weights/best.pt -> ibvap_plate.onnx)
+    # unless the caller asked for something specific.
+    if name:
+        stem = name
+    elif exported_path.stem in {"best", "last"}:
+        stem = weights.parent.parent.name
+    else:
+        stem = exported_path.stem
+    destination = out_dir / f"{stem}{exported_path.suffix}"
     if exported_path.resolve() != destination.resolve():
         shutil.move(str(exported_path), destination)
 
@@ -88,12 +99,15 @@ def main():
     parser.add_argument("--dynamic", action="store_true",
                         help="Dynamic batch/size axes; leave off for TensorRT")
     parser.add_argument("--out-dir", type=Path, default=Path("models/onnx"))
+    parser.add_argument("--name", type=str, default=None,
+                        help="Output filename stem; defaults to the run "
+                             "directory name so exports do not collide")
     parser.add_argument("--no-verify", dest="verify", action="store_false",
                         help="Skip the onnxruntime load-and-run check")
     args = parser.parse_args()
 
     onnx_path = export(args.weights, args.imgsz, args.opset, args.simplify,
-                       args.half, args.dynamic, args.out_dir)
+                       args.half, args.dynamic, args.out_dir, args.name)
     if args.verify:
         verify(onnx_path, args.imgsz)
 

@@ -57,10 +57,33 @@ class EdgeDetector:
         }
 
     def load(self):
-        """Load the YOLOv8 model."""
+        """Load the YOLOv8 model, adopting its own class taxonomy.
+
+        The defaults above are COCO's indices, which are correct only for
+        stock weights. A model fine-tuned on IDD has seven classes in a
+        different order — and one, `autorickshaw`, that COCO has no index
+        for at all. Trusting the hardcoded map against such a model
+        silently mislabels every detection: an autorickshaw at index 6
+        would be reported as a truck.
+
+        So the model's own `names` win whenever it has them, and the target
+        filter is rebuilt from those names rather than from indices.
+        """
         if YOLO is None:
             raise ImportError("ultralytics not installed. Run: pip install ultralytics")
         self.model = YOLO(self.model_path)
+
+        model_names = getattr(self.model, "names", None)
+        if model_names:
+            names = {int(i): str(n) for i, n in dict(model_names).items()}
+            # Only adopt them if this is not stock COCO — stock has 80
+            # classes and the configured target indices already apply.
+            if len(names) != 80:
+                wanted = set(self.class_names.values()) | {"autorickshaw"}
+                self.class_names = names
+                self.target_classes = [i for i, n in names.items() if n in wanted]
+                print(f"[detector] adopted model taxonomy: "
+                      f"{len(names)} classes, {len(self.target_classes)} targeted")
         return self
 
     def detect(self, frame: np.ndarray) -> List[Detection]:

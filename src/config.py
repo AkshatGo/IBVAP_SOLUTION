@@ -21,7 +21,15 @@ class DetectionConfig:
     model_path: str = field(
         default_factory=lambda: os.environ.get("IBVAP_DETECTION_MODEL", "yolov8n.pt")
     )
-    confidence_threshold: float = 0.45
+    # 0.45 was chosen against stock COCO weights. Swept against the
+    # IDD-fine-tuned model (scripts/evaluate.py threshold), F1 peaks at
+    # 0.25 — 0.45 costs 5.5 points of recall for precision this deployment
+    # does not need. A missed intruder is worse than a false alert at a
+    # border, so the lower cutoff is the right default once fine-tuned
+    # weights are in use. Override with IBVAP_DETECTION_CONF.
+    confidence_threshold: float = field(
+        default_factory=lambda: float(os.environ.get("IBVAP_DETECTION_CONF", "0.45"))
+    )
     nms_threshold: float = 0.5
     input_size: Tuple[int, int] = (640, 640)
     # Classes we care about: person=0, bicycle=1, car=2, motorcycle=3, bus=5, truck=7
