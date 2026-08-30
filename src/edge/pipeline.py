@@ -15,6 +15,7 @@ from .anpr import ANPREngine, ConsensusResult
 from .fence import VirtualFence, IntrusionEvent
 from .signal import SignalLossDetector
 from .hashchain import HashChain, EventRecord
+from ..config import CONFIG
 from ..utils.logger import log
 
 
@@ -39,7 +40,7 @@ class IBVAPPipeline:
     
     Flow:
     1. Frame → YOLOv8 detection (persons, vehicles)
-    2. Detections → ByteTrack (persistent IDs)
+    2. Detections → IoU tracker (persistent IDs)
     3. Tracked objects → Virtual fence check
     4. Vehicle crops → ANPR (plate recognition)
     5. Camera → Signal loss check
@@ -50,12 +51,27 @@ class IBVAPPipeline:
         self.camera_id = camera_id
         self.site_id = site_id
 
-        # Initialize modules
-        self.detector = EdgeDetector(model_path="yolov8n.pt", confidence=0.45)
+        # Initialize modules from CONFIG, so the detection and plate models
+        # can be swapped for fine-tuned checkpoints via IBVAP_DETECTION_MODEL
+        # / IBVAP_PLATE_MODEL without touching code (ROADMAP §5.2).
+        self.detector = EdgeDetector(
+            model_path=CONFIG.detection.model_path,
+            confidence=CONFIG.detection.confidence_threshold,
+            target_classes=CONFIG.detection.target_classes,
+            input_size=CONFIG.detection.input_size,
+        )
         self.tracker = ObjectTracker()
-        self.anpr = ANPREngine(consensus_frames=5)
-        self.fence = VirtualFence(cooldown_seconds=5.0)
-        self.signal_detector = SignalLossDetector(timeout_seconds=5.0)
+        self.anpr = ANPREngine(
+            consensus_frames=CONFIG.anpr.consensus_frames,
+            min_confidence=CONFIG.anpr.min_confidence,
+            ocr_languages=CONFIG.anpr.languages,
+            plate_model_path=CONFIG.anpr.plate_model_path,
+            plate_model_confidence=CONFIG.anpr.plate_model_confidence,
+        )
+        self.fence = VirtualFence(cooldown_seconds=CONFIG.fence.alert_cooldown_seconds)
+        self.signal_detector = SignalLossDetector(
+            timeout_seconds=CONFIG.camera.signal_loss_timeout_seconds
+        )
         self.hash_chain = HashChain()
 
         # State
@@ -71,6 +87,7 @@ class IBVAPPipeline:
         """Load all ML models."""
         if not self._model_loaded:
             log.info(f"Loading models for {self.site_id}/{self.camera_id}")
+            log.info(f"Detection model: {self.detector.model_path}")
             self.detector.load()
             self.anpr.load()
             self.signal_detector.register_camera(self.camera_id)

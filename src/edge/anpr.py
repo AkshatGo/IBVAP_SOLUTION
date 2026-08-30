@@ -49,11 +49,18 @@ class ANPREngine:
     Indian plate ANPR with multi-frame OCR consensus voting.
     
     Pipeline:
-    1. Plate detection via contour analysis + aspect ratio filtering
+    1. Plate localization — trained YOLO localizer if available, else
+       contour analysis + aspect ratio filtering
     2. Plate region cropping and preprocessing
     3. OCR (EasyOCR)
     4. Indian plate pattern validation
     5. Multi-frame majority voting
+
+    Localization has two paths on purpose. The contour detector needs no
+    model and no GPU, so it stays the fallback for Tier-2 edge sites; a
+    localizer fine-tuned by scripts/train.py becomes the primary path
+    where the hardware allows it. Pass `plate_model_path` (or set
+    IBVAP_PLATE_MODEL) to use the trained one.
     """
 
     INDIAN_PATTERN = re.compile(r"[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{4}")
@@ -63,28 +70,79 @@ class ANPREngine:
         consensus_frames: int = 5,
         min_confidence: float = 0.6,
         ocr_languages: List[str] = None,
+        plate_model_path: Optional[str] = None,
+        plate_model_confidence: float = 0.35,
     ):
         self.consensus_frames = consensus_frames
         self.min_confidence = min_confidence
         self.ocr_languages = ocr_languages or ["en"]
+        self.plate_model_path = plate_model_path
+        self.plate_model_confidence = plate_model_confidence
         self.reader = None
+        self.plate_model = None
         self.readings: Dict[int, List[PlateResult]] = {}  # track_id -> readings
         self.consensus_results: Dict[int, ConsensusResult] = {}
 
+    @property
+    def localizer(self) -> str:
+        """Which localization path is active — 'yolo' or 'contour'."""
+        return "yolo" if self.plate_model is not None else "contour"
+
     def load(self):
-        """Load OCR engine."""
+        """Load OCR engine and, if configured, the trained plate localizer."""
         try:
             import easyocr
             self.reader = easyocr.Reader(self.ocr_languages, gpu=False)
         except ImportError:
             print("[ANPR] easyocr not installed, OCR disabled")
             self.reader = None
+
+        if self.plate_model_path:
+            try:
+                from ultralytics import YOLO
+                self.plate_model = YOLO(self.plate_model_path)
+                print(f"[ANPR] plate localizer: {self.plate_model_path}")
+            except Exception as e:
+                # Never fail the pipeline over this — degrade to contours.
+                print(f"[ANPR] could not load plate localizer "
+                      f"({type(e).__name__}: {e}); using contour fallback")
+                self.plate_model = None
         return self
 
     def detect_plate_region(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """
-        Detect candidate plate regions using contour analysis.
+        Detect candidate plate regions.
+        Uses the trained YOLO localizer when loaded, contours otherwise.
         Returns list of (x, y, w, h) bounding boxes.
+        """
+        if self.plate_model is not None:
+            return self._detect_plate_region_yolo(frame)
+        return self._detect_plate_region_contour(frame)
+
+    def _detect_plate_region_yolo(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        """Localize plates with the fine-tuned single-class YOLO model."""
+        try:
+            results = self.plate_model(
+                frame, conf=self.plate_model_confidence, verbose=False
+            )
+        except Exception as e:
+            print(f"[ANPR] localizer inference failed ({type(e).__name__}); "
+                  "falling back to contours for this frame")
+            return self._detect_plate_region_contour(frame)
+
+        boxes = []
+        for result in results:
+            for box in result.boxes:
+                x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
+                w, h = x2 - x1, y2 - y1
+                if w > 0 and h > 0:
+                    boxes.append((x1, y1, w, h))
+        return boxes
+
+    def _detect_plate_region_contour(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
+        """
+        Detect candidate plate regions using contour analysis.
+        No model, no GPU — the Tier-2 fallback path.
         """
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         # Bilateral filter to reduce noise while keeping edges
