@@ -135,6 +135,10 @@ class SignalLossDetector:
 
         gray = frame if len(frame.shape) == 2 else np.mean(frame, axis=2)
         avg_brightness = float(np.mean(gray))
+        # Capture the previous reading *before* overwriting it — the
+        # brightness-drop check below compares the two, and comparing a
+        # value against itself can never trip.
+        prev_brightness = cam.avg_brightness
         cam.avg_brightness = avg_brightness
 
         # Check for all-black frame (possible jamming/cover)
@@ -157,7 +161,6 @@ class SignalLossDetector:
 
         # Check for sudden brightness drop (possible gradual jamming)
         if cam.frame_count > 10:
-            prev_brightness = cam.avg_brightness
             if prev_brightness > 0 and avg_brightness / prev_brightness < self.brightness_drop_threshold:
                 return self._trigger_loss(camera_id, cam, "brightness_drop",
                                            f"Sudden brightness drop: "
