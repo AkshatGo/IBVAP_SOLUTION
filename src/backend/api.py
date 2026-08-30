@@ -80,6 +80,22 @@ def create_app(pipeline: Optional[IBVAPPipeline] = None) -> FastAPI:
         """Get camera status."""
         return pipeline.signal_detector.get_status()
 
+    @app.get("/api/signal/thresholds")
+    async def get_signal_thresholds():
+        """Get current signal-loss detection thresholds."""
+        return pipeline.signal_detector.get_thresholds()
+
+    @app.post("/api/signal/thresholds")
+    async def update_signal_thresholds(thresholds: dict):
+        """Update signal-loss thresholds at runtime (for live demo tuning)."""
+        import json, os
+        config_path = os.path.join("config", "signal_thresholds.json")
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+        with open(config_path, "w") as f:
+            json.dump(thresholds, f, indent=2)
+        pipeline.signal_detector.reload_thresholds()
+        return {"status": "ok", "thresholds": pipeline.signal_detector.get_thresholds()}
+
     @app.get("/api/fences")
     async def get_fences():
         """Get virtual fence zones."""
@@ -118,12 +134,19 @@ def create_app(pipeline: Optional[IBVAPPipeline] = None) -> FastAPI:
 
     @app.get("/api/plates")
     async def get_plates():
-        """Get recent ANPR results."""
+        """Get ANPR results with per-frame readings and consensus.
+
+        Each plate entry includes:
+        - consensus: the majority-vote result (plate_text, confidence, num_frames, votes)
+        - readings: list of individual per-frame OCR readings (for debugging/Q&A)
+        """
         plates = []
         for tid, readings in pipeline.anpr.readings.items():
             consensus = pipeline.anpr.get_consensus(tid)
             if consensus:
-                plates.append(consensus.to_dict())
+                entry = consensus.to_dict()
+                entry["readings"] = [r.to_dict() for r in readings]
+                plates.append(entry)
         return {"plates": plates}
 
     @app.get("/api/chain")
