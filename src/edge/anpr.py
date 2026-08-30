@@ -97,6 +97,16 @@ class ANPREngine:
             print("[ANPR] easyocr not installed, OCR disabled")
             self.reader = None
 
+        self.load_localizer()
+        return self
+
+    def load_localizer(self):
+        """Load only the plate localizer, skipping the OCR reader.
+
+        Localization can be evaluated and benchmarked on its own, and
+        building an EasyOCR reader costs seconds and ~200MB that a
+        localization-only run has no use for.
+        """
         if self.plate_model_path:
             try:
                 from ultralytics import YOLO

@@ -150,3 +150,8 @@ docker-compose.override.yml
 checkpoints/
 wandb/
 mlruns/
+
+# Datasets and training artifacts (regenerate with scripts/)
+data/raw/
+runs/
+*.log

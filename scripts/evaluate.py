@@ -305,6 +305,143 @@ def sweep_threshold(args):
     return rows
 
 
+# --- localizer A/B ------------------------------------------------------
+
+def _iou(a, b) -> float:
+    """IoU of two (x1, y1, x2, y2) boxes."""
+    ix1, iy1 = max(a[0], b[0]), max(a[1], b[1])
+    ix2, iy2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    if inter <= 0:
+        return 0.0
+    area_a = (a[2] - a[0]) * (a[3] - a[1])
+    area_b = (b[2] - b[0]) * (b[3] - b[1])
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _load_gt(label_path: Path, img_w: int, img_h: int):
+    """Read YOLO labels back into absolute (x1, y1, x2, y2) boxes."""
+    boxes = []
+    if not label_path.exists():
+        return boxes
+    for line in label_path.read_text().splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        cx, cy, w, h = (float(v) for v in parts[1:5])
+        boxes.append((
+            (cx - w / 2) * img_w, (cy - h / 2) * img_h,
+            (cx + w / 2) * img_w, (cy + h / 2) * img_h,
+        ))
+    return boxes
+
+
+def score_localizer(engine, images, labels_dir: Path, iou_threshold: float):
+    """Greedy IoU matching of predictions to ground truth.
+
+    Each ground-truth box may be claimed once. Unmatched predictions are
+    false positives, unmatched ground truth false negatives — the same
+    accounting a detection mAP uses, at a single IoU threshold.
+    """
+    import cv2
+
+    tp = fp = fn = 0
+    images_with_gt = 0
+
+    for image_path in images:
+        image = cv2.imread(str(image_path))
+        if image is None:
+            continue
+        img_h, img_w = image.shape[:2]
+        truth = _load_gt(labels_dir / f"{image_path.stem}.txt", img_w, img_h)
+        if not truth:
+            continue
+        images_with_gt += 1
+
+        preds = [(x, y, x + w, y + h)
+                 for (x, y, w, h) in engine.detect_plate_region(image)]
+
+        claimed = set()
+        for pred in preds:
+            best_iou, best_idx = 0.0, None
+            for idx, gt in enumerate(truth):
+                if idx in claimed:
+                    continue
+                value = _iou(pred, gt)
+                if value > best_iou:
+                    best_iou, best_idx = value, idx
+            if best_idx is not None and best_iou >= iou_threshold:
+                claimed.add(best_idx)
+                tp += 1
+            else:
+                fp += 1
+        fn += len(truth) - len(claimed)
+
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+    return {"images": images_with_gt, "tp": tp, "fp": fp, "fn": fn,
+            "precision": precision, "recall": recall, "f1": f1}
+
+
+def compare_localizers(args):
+    """Score the contour baseline and the trained localizer side by side.
+
+    Without the baseline a trained-model number cannot be attributed: the
+    whole claim is that replacing contour localization improved things, and
+    that requires both halves measured on the same held-out images.
+    """
+    from src.edge.anpr import ANPREngine
+
+    images_dir = Path(args.images_dir)
+    labels_dir = Path(args.labels_dir)
+    if not images_dir.is_dir():
+        raise SystemExit(f"Images directory not found: {images_dir}")
+
+    images = [p for p in sorted(images_dir.iterdir()) if p.suffix in IMAGE_SUFFIXES]
+    if not images:
+        raise SystemExit(f"No images in {images_dir}")
+
+    rows = []
+
+    # Baseline: no model at all — the classical contour detector.
+    baseline = ANPREngine()
+    print(f"Scoring '{baseline.localizer}' baseline on {len(images)} images...")
+    rows.append(("contour (baseline)", score_localizer(baseline, images, labels_dir,
+                                                       args.iou)))
+
+    if args.plate_model:
+        trained = ANPREngine(plate_model_path=args.plate_model,
+                             plate_model_confidence=args.conf).load_localizer()
+        if trained.localizer != "yolo":
+            raise SystemExit(f"Could not load {args.plate_model}")
+        print(f"Scoring trained localizer ({args.plate_model})...")
+        rows.append(("yolo (trained)", score_localizer(trained, images, labels_dir,
+                                                       args.iou)))
+
+    print(f"\nLocalization at IoU >= {args.iou}")
+    print(f"{'localizer':<22}{'precision':>11}{'recall':>9}{'F1':>9}"
+          f"{'TP':>7}{'FP':>7}{'FN':>6}")
+    print("-" * 71)
+    for name, r in rows:
+        print(f"{name:<22}{r['precision']:>11.3f}{r['recall']:>9.3f}{r['f1']:>9.3f}"
+              f"{r['tp']:>7}{r['fp']:>7}{r['fn']:>6}")
+
+    if len(rows) == 2:
+        base, trained_row = rows[0][1], rows[1][1]
+        print(f"\nDelta (trained - baseline):")
+        print(f"  precision {trained_row['precision'] - base['precision']:+.3f}")
+        print(f"  recall    {trained_row['recall'] - base['recall']:+.3f}")
+        print(f"  F1        {trained_row['f1'] - base['f1']:+.3f}")
+
+    if args.out:
+        Path(args.out).write_text(json.dumps(
+            {name: r for name, r in rows}, indent=2))
+        print(f"\nWrote {args.out}")
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate IBVAP's fine-tuned models")
     sub = parser.add_subparsers(dest="task", required=True)
@@ -336,8 +473,20 @@ def main():
                           default=[0.25, 0.35, 0.45, 0.55, 0.65])
     p_thresh.add_argument("--out", type=str, default=None, help="Write results as JSON")
 
+    p_loc = sub.add_parser("localizer",
+                           help="Contour baseline vs trained plate localizer")
+    p_loc.add_argument("--images-dir", type=str, default="data/anpr/images/val")
+    p_loc.add_argument("--labels-dir", type=str, default="data/anpr/labels/val")
+    p_loc.add_argument("--plate-model", type=str, default=None,
+                       help="Trained localizer; omit to score only the baseline")
+    p_loc.add_argument("--iou", type=float, default=0.5)
+    p_loc.add_argument("--conf", type=float, default=0.35)
+    p_loc.add_argument("--out", type=str, default=None)
+
     args = parser.parse_args()
-    if args.task == "detection":
+    if args.task == "localizer":
+        compare_localizers(args)
+    elif args.task == "detection":
         evaluate_detection(args)
     elif args.task == "threshold":
         sweep_threshold(args)
