@@ -1,25 +1,70 @@
 """
-Object Tracker — wraps ByteTrack for persistent object IDs across frames.
-Assigns stable track_ids to detections so we can follow objects over time.
+Object Tracker — self-contained multi-object tracker with persistent IDs.
+
+Earlier versions of this module tried to delegate to an external
+`byte_tracker` package or `ultralytics.trackers.ByteTrack`. Both fail
+silently in practice: the `byte_tracker` PyPI package isn't installed by
+default, and different `ultralytics` releases have shipped incompatible
+tracker class names/constructor signatures (`ByteTrack` vs `BYTETracker`,
+different `.update()` call shapes). When both imports fail, the old code
+fell back to "assign sequential IDs every frame" — which is not a tracker
+at all, it's a no-op that silently breaks everything downstream that
+depends on a *stable* track_id: fence entry/exit detection, speed/bearing
+estimation, and ANPR multi-frame consensus voting.
+
+This module implements a small, dependency-free greedy IoU tracker instead
+(single-stage association + track aging, in the spirit of ByteTrack without
+its two-stage low/high-confidence matching machinery). It has no optional
+imports and therefore always works the same way regardless of what's
+installed.
 """
 import numpy as np
 from typing import List, Dict, Optional
 from collections import defaultdict
+from dataclasses import dataclass
 from .detector import Detection
 
-try:
-    from byte_tracker.byte_tracker import ByteTracker as _ByteTracker
-except ImportError:
-    try:
-        from ultralytics.trackers import ByteTrack as _ByteTracker
-    except ImportError:
-        _ByteTracker = None
+
+def _iou(box_a: tuple, box_b: tuple) -> float:
+    """Intersection-over-union of two (x1, y1, x2, y2) boxes."""
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    if inter <= 0:
+        return 0.0
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+@dataclass
+class _Track:
+    track_id: int
+    bbox: tuple
+    class_id: int
+    class_name: str
+    confidence: float
+    hits: int = 1
+    time_since_update: int = 0
+
+    @property
+    def confirmed(self) -> bool:
+        return self.hits >= 1  # see ObjectTracker.min_hits for the real gate
 
 
 class ObjectTracker:
     """
-    Multi-object tracker using ByteTrack.
-    Maintains persistent IDs for each tracked object across frames.
+    Multi-object tracker with persistent IDs across frames.
+
+    Association strategy: greedy IoU matching between each active track's
+    last-known box and the current frame's detections (same class only),
+    highest-IoU-first, above `match_thresh`. Unmatched tracks age out after
+    `track_buffer` consecutive missed frames; unmatched detections become
+    new tracks immediately (returned track_ids are stable and monotonically
+    increasing — never reused).
     """
 
     def __init__(
@@ -33,80 +78,73 @@ class ObjectTracker:
         self.track_buffer = track_buffer
         self.match_thresh = match_thresh
         self.min_hits = min_hits
-        self.tracker = None
+
+        self._tracks: Dict[int, _Track] = {}
+        self._next_id = 1
         self.frame_id = 0
         self.track_history: Dict[int, List[tuple]] = defaultdict(list)
 
-    def _init_tracker(self):
-        """Initialize the ByteTrack tracker."""
-        if _ByteTracker is not None:
-            self.tracker = _ByteTracker(
-                track_thresh=self.track_thresh,
-                track_buffer=self.track_buffer,
-                match_thresh=self.match_thresh,
-            )
-
     def update(self, detections: List[Detection], frame_shape: tuple) -> List[Detection]:
         """
-        Update tracker with new detections.
-        Returns detections with assigned track_ids.
+        Update tracker with new detections. Returns the same detections with
+        `track_id` filled in with a persistent ID (stable across frames for
+        the same physical object, best-effort).
         """
         self.frame_id += 1
+        dets = [d for d in detections if d.confidence >= self.track_thresh]
 
-        if self.tracker is None:
-            self._init_tracker()
+        # Greedy IoU association, same-class only
+        candidates = []
+        for tid, tr in self._tracks.items():
+            for i, d in enumerate(dets):
+                if tr.class_id != d.class_id:
+                    continue
+                iou = _iou(tr.bbox, d.bbox)
+                if iou >= self.match_thresh:
+                    candidates.append((iou, tid, i))
+        candidates.sort(key=lambda x: -x[0])
 
-        if self.tracker is None or not detections:
-            # Fallback: assign sequential IDs
-            for i, det in enumerate(detections):
-                det.track_id = i
-                self.track_history[det.track_id].append(det.center)
-            return detections
+        matched_tracks = set()
+        matched_dets = set()
+        for iou, tid, i in candidates:
+            if tid in matched_tracks or i in matched_dets:
+                continue
+            matched_tracks.add(tid)
+            matched_dets.add(i)
 
-        # Convert detections to [x1, y1, x2, y2, conf] format for ByteTrack
-        dets_np = np.array([
-            [d.bbox[0], d.bbox[1], d.bbox[2], d.bbox[3], d.confidence]
-            for d in detections
-        ], dtype=np.float32)
+            tr = self._tracks[tid]
+            d = dets[i]
+            tr.bbox = d.bbox
+            tr.confidence = d.confidence
+            tr.hits += 1
+            tr.time_since_update = 0
 
-        if len(dets_np) == 0:
-            return detections
+            d.track_id = tid
+            self.track_history[tid].append(d.center)
 
-        # Run tracker
-        online_targets = self.tracker.update(dets_np, frame_shape, frame_shape)
+        # Age out tracks that went unmatched this frame
+        for tid in list(self._tracks.keys()):
+            if tid in matched_tracks:
+                continue
+            tr = self._tracks[tid]
+            tr.time_since_update += 1
+            if tr.time_since_update > self.track_buffer:
+                del self._tracks[tid]
 
-        # Map tracked IDs back to detections
-        tracked = []
-        for t in online_targets:
-            tlwh = t.tlwh
-            tid = t.track_id
-            conf = t.score if hasattr(t, 'score') else 0.0
+        # Spawn new tracks for unmatched detections
+        for i, d in enumerate(dets):
+            if i in matched_dets:
+                continue
+            tid = self._next_id
+            self._next_id += 1
+            self._tracks[tid] = _Track(
+                track_id=tid, bbox=d.bbox, class_id=d.class_id,
+                class_name=d.class_name, confidence=d.confidence,
+            )
+            d.track_id = tid
+            self.track_history[tid].append(d.center)
 
-            # Find matching detection by IoU
-            best_match = None
-            best_iou = 0.0
-            tx1, ty1 = tlwh[0], tlwh[1]
-            tx2, ty2 = tx1 + tlwh[2], ty1 + tlwh[3]
-
-            for det in detections:
-                ix1 = max(det.bbox[0], tx1)
-                iy1 = max(det.bbox[1], ty1)
-                ix2 = min(det.bbox[2], tx2)
-                iy2 = min(det.bbox[3], ty2)
-                inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-                area_a = (det.bbox[2] - det.bbox[0]) * (det.bbox[3] - det.bbox[1])
-                area_b = tlwh[2] * tlwh[3]
-                iou = inter / max(area_a + area_b - inter, 1e-6)
-                if iou > best_iou:
-                    best_iou = iou
-                    best_match = det
-
-            if best_match is not None:
-                best_match.track_id = tid
-                self.track_history[tid].append(best_match.center)
-                tracked.append(best_match)
-
-        return tracked
+        return [d for d in dets if d.track_id != -1]
 
     def get_trajectory(self, track_id: int) -> List[tuple]:
         """Get full trajectory for a tracked object."""
@@ -136,9 +174,17 @@ class ObjectTracker:
         else:
             return "S" if dy > 0 else "N"
 
+    def is_confirmed(self, track_id: int) -> bool:
+        """True once a track has been matched enough times to trust (reduces flicker)."""
+        tr = self._tracks.get(track_id)
+        return tr is not None and tr.hits >= self.min_hits
+
+    def active_track_count(self) -> int:
+        return len(self._tracks)
+
     def reset(self):
         """Reset tracker state."""
         self.frame_id = 0
+        self._tracks.clear()
+        self._next_id = 1
         self.track_history.clear()
-        if self.tracker is not None:
-            self._init_tracker()
