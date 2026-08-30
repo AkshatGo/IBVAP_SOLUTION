@@ -118,6 +118,32 @@ python -m src.edge.hashchain verify
 
 ---
 
+### 7. Run Tests
+
+```bash
+make test          # or: python -m pytest
+```
+
+98 tests covering the pipeline contract (Detection → Tracker → Fence →
+ANPR → HashChain). They use stubbed detections, so the suite runs in ~2
+seconds and downloads no model weights.
+
+---
+
+### 8. Use Fine-Tuned Weights
+
+Model paths are environment-driven, so swapping a fine-tuned checkpoint in
+needs no code change:
+
+```bash
+IBVAP_DETECTION_MODEL=runs/detect/ibvap_detection/weights/best.pt python main.py demo
+IBVAP_PLATE_MODEL=runs/detect/ibvap_plate/weights/best.pt python main.py demo
+```
+
+Unset, detection uses stock `yolov8n.pt` and ANPR uses the classical
+contour localizer — no model and no GPU required. See `docs/ROADMAP.md` §4
+for the training and evaluation workflow.
+
 ## API Endpoints
 
 | Method | Endpoint | Description |
@@ -164,9 +190,15 @@ IBVAP_SOLUTION/
 │   └── utils/
 │       └── logger.py          # Structured logging
 │
-├── scripts/                   # Dataset conversion & augmentation
+├── scripts/                   # Dataset prep, training, evaluation
 │   ├── idd_to_yolo.py         # IDD-Detection → YOLO converter
-│   └── anpr_augmentation.py   # Plate augmentation pipeline
+│   ├── exdark_to_yolo.py      # ExDark → YOLO + synthetic low-light
+│   ├── anpr_augmentation.py   # Plate augmentation pipeline
+│   ├── train.py               # YOLOv8 fine-tuning (detection | plate)
+│   ├── evaluate.py            # mAP day/night split, ANPR accuracy
+│   └── export_onnx.py         # ONNX export for edge deployment
+│
+├── tests/                     # Pipeline contract tests (no models needed)
 │
 ├── data/                      # Datasets (created by scripts/)
 ├── docs/                      # Technical documentation
@@ -196,6 +228,7 @@ IBVAP_SOLUTION/
 | Backend | fastapi, uvicorn, python-multipart |
 | Dashboard | streamlit |
 | Dataset scripts | albumentations |
+| Tests | pytest |
 
 ---
 

@@ -116,10 +116,12 @@ data/
 
 ### 3.4 ExDark Preprocessing
 
-1. Map ExDark classes to target classes
+1. Map ExDark classes to target classes (ExDark covers 5 of our 6 — no truck)
 2. Merge with darkened subset of IDD (gamma 0.3-0.6, noise, contrast reduction)
-3. Train/val split: 80/20 (genuinely dark-only held-out val)
+3. Train/val split: 80/20 — synthetic darkening is written to **train only**,
+   so night metrics are measured on genuinely dark photographs
 4. One model for full lighting spectrum (not separate day/night models)
+5. **Script:** `scripts/exdark_to_yolo.py` (`convert` and `darken` modes)
 
 ---
 
@@ -130,21 +132,47 @@ data/
 | Detection (IDD + darkened-IDD + ExDark) | `yolov8n.pt` | 50-80, early stopping | 640 | 16 | Freeze backbone first 10 epochs, then unfreeze |
 | Plate localizer | `yolov8n.pt`, single-class | 50 | 640 | 16 | Watch for overfitting on smaller dataset |
 
-**Compute:** Free-tier Kaggle (30 GPU-hrs/week) or Google Colab T4 is sufficient.
+**Script:** `scripts/train.py detection` / `scripts/train.py plate`. The
+detection run does the freeze warm-up as two stages automatically.
+
+**Compute:** Free-tier Kaggle (30 GPU-hrs/week) or Google Colab T4 is
+sufficient. Note the local dev machine has an RTX 3050 but a **CPU-only
+torch build**, so `--device auto` resolves to CPU there; installing a CUDA
+torch build or using Kaggle/Colab is required for a realistic run.
 
 ### Evaluation Metrics (for Grand Finale)
 
 - **Detection:** mAP@0.5 and mAP@0.5:0.95, broken out for day vs night subsets
-- **ANPR:** Plate localization mAP@0.5, end-to-end OCR exact match rate (before vs after fine-tuning)
+- **ANPR:** Plate localization recall, end-to-end OCR exact match rate (before vs after fine-tuning)
+
+**Script:** `scripts/evaluate.py detection` prints the day/night breakout and
+the gap between them; `scripts/evaluate.py anpr` prints localization recall
+and exact-match rate per localizer, so a gain can be attributed to
+localization rather than to OCR (which stays unchanged EasyOCR).
 
 ---
 
 ## 5. Integration Plan
 
-1. Export fine-tuned models to ONNX (`yolo export format=onnx`)
-2. Swap `EdgeDetector` model path via config flag (A/B stock vs fine-tuned)
-3. Re-run test suite against new models (fine-tuned models may shift confidence distributions)
-4. Re-validate detection threshold (0.45) against new model
+1. Export fine-tuned models to ONNX — `scripts/export_onnx.py`, which also
+   loads the result back through onnxruntime so a broken export fails at
+   export time rather than on the edge device. *Exporting is not
+   benchmarking: no Jetson hardware measurement exists yet.*
+2. Swap models via config flag — **done**. `IBVAP_DETECTION_MODEL` and
+   `IBVAP_PLATE_MODEL` override the paths in `src/config.py`, so a live
+   stock-vs-fine-tuned A/B needs no code change:
+   ```
+   IBVAP_DETECTION_MODEL=runs/detect/ibvap_detection/weights/best.pt python main.py demo
+   ```
+   With `IBVAP_PLATE_MODEL` unset, ANPR keeps the classical contour
+   localizer — no model, no GPU, the Tier-2 edge path.
+3. Re-run the test suite against new models — `make test`. The suite pins
+   the pipeline contract (Detection → Tracker → Fence → ANPR → HashChain)
+   with stubbed detections, so it catches wiring breakage from a model
+   swap in ~2s without downloading anything.
+4. Re-validate the detection threshold — `scripts/evaluate.py threshold`
+   sweeps the confidence cutoff and reports precision/recall/F1 per value,
+   so the `0.45` in `src/config.py` is re-derived rather than assumed.
 
 ---
 

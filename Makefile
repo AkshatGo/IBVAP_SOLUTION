@@ -1,9 +1,11 @@
 # IBVAP Makefile
 # Common commands for development, demo, and deployment
 
-.PHONY: help install run-server run-dashboard demo verify-chain corrupt-chain \
+.PHONY: help install test run-server run-dashboard demo verify-chain corrupt-chain \
         docker-up docker-down docker-build docker-logs \
-        convert-idd augment-anpr clean
+        convert-idd convert-exdark darken-detection augment-anpr \
+        train-detection train-plate eval-detection eval-anpr eval-threshold \
+        export-onnx clean
 
 # Default target
 help:
@@ -12,6 +14,7 @@ help:
 	@echo ""
 	@echo "Setup:"
 	@echo "  make install        Install Python dependencies"
+	@echo "  make test           Run the test suite (no models downloaded)"
 	@echo ""
 	@echo "Run Services:"
 	@echo "  make run-server     Start FastAPI backend (port 8000)"
@@ -28,9 +31,19 @@ help:
 	@echo "  make docker-build   Build images"
 	@echo "  make docker-logs    Tail logs"
 	@echo ""
-	@echo "Dataset Prep (see docs/ROADMAP.md):"
-	@echo "  make convert-idd    Convert IDD-Detection to YOLO format"
-	@echo "  make augment-anpr   Augment ANPR plate dataset"
+	@echo "Dataset Prep (see docs/ROADMAP.md §3):"
+	@echo "  make convert-idd       Convert IDD-Detection to YOLO format"
+	@echo "  make convert-exdark    Convert ExDark (low-light) to YOLO format"
+	@echo "  make darken-detection  Bake synthetic night copies of train images"
+	@echo "  make augment-anpr      Augment the ANPR plate dataset"
+	@echo ""
+	@echo "Training & Evaluation (needs a GPU — see docs/ROADMAP.md §4):"
+	@echo "  make train-detection   Fine-tune the person/vehicle detector"
+	@echo "  make train-plate       Fine-tune the plate localizer"
+	@echo "  make eval-detection    mAP with a day/night breakout"
+	@echo "  make eval-anpr         End-to-end plate accuracy"
+	@echo "  make eval-threshold    Re-validate the confidence cutoff"
+	@echo "  make export-onnx       Export weights to ONNX for edge deployment"
 	@echo ""
 	@echo "Utility:"
 	@echo "  make clean          Remove caches and temporary files"
@@ -42,6 +55,10 @@ help:
 install:
 	@echo "Installing dependencies..."
 	pip install -r requirements.txt
+
+test:
+	@echo "Running test suite..."
+	python -m pytest
 
 # ============================================================
 # Run Services
@@ -95,12 +112,48 @@ convert-idd:
 	@echo "Converting IDD-Detection to YOLO format..."
 	python scripts/idd_to_yolo.py --idd-root data/idd_detection --out-root data/detection
 
+convert-exdark:
+	@echo "Converting ExDark to YOLO format..."
+	python scripts/exdark_to_yolo.py convert --exdark-root data/ExDark --out-root data/detection
+
+darken-detection:
+	@echo "Synthesising low-light training copies..."
+	python scripts/exdark_to_yolo.py darken --out-root data/detection --fraction 0.30
+
 augment-anpr:
 	@echo "Augmenting ANPR plate dataset..."
 	python scripts/anpr_augmentation.py \
 		--images-dir data/anpr/images/train \
 		--labels-dir data/anpr/labels/train \
 		--out-dir data/anpr_augmented/train
+
+# ============================================================
+# Training & Evaluation
+# ============================================================
+
+DETECTION_WEIGHTS ?= runs/detect/ibvap_detection/weights/best.pt
+PLATE_WEIGHTS     ?= runs/detect/ibvap_plate/weights/best.pt
+
+train-detection:
+	python scripts/train.py detection --data data/detection/data.yaml
+
+train-plate:
+	python scripts/train.py plate --data data/anpr/data.yaml
+
+eval-detection:
+	python scripts/evaluate.py detection --weights $(DETECTION_WEIGHTS) \
+		--data data/detection/data.yaml
+
+eval-anpr:
+	python scripts/evaluate.py anpr --images-dir data/anpr/images/val \
+		--ground-truth data/anpr/plates_val.json --plate-model $(PLATE_WEIGHTS)
+
+eval-threshold:
+	python scripts/evaluate.py threshold --weights $(DETECTION_WEIGHTS) \
+		--data data/detection/data.yaml
+
+export-onnx:
+	python scripts/export_onnx.py --weights $(DETECTION_WEIGHTS)
 
 # ============================================================
 # Utility
