@@ -2,6 +2,7 @@
 Main Inference Pipeline — Ties all edge modules together.
 Processes video frames through the full detection → tracking → analysis → alert pipeline.
 """
+from pathlib import Path
 import cv2
 import numpy as np
 import time
@@ -322,4 +323,12 @@ class IBVAPPipeline:
             "cameras_offline": self.signal_detector.get_offline_count(),
             "fence_zones": len(self.fence.zones),
             "head_hash": chain_stats["head_hash"],
+            # Which models are actually live. The repo ships two entry points
+            # (main.py and web_demo.py) and they used to resolve different
+            # weights from the same checkout with nothing on screen to say
+            # so — a demo cannot be trusted if it cannot name its own model.
+            "detection_model": Path(self.detector.model_path).name,
+            "detection_fine_tuned": Path(self.detector.model_path).name != "yolov8n.pt",
+            "detection_confidence": self.detector.confidence,
+            "plate_localizer": self.anpr.localizer,
         }

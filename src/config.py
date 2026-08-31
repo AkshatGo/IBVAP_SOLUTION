@@ -5,34 +5,98 @@ All system-wide settings in one place.
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 import json
+import logging
 import os
+from functools import lru_cache
 from pathlib import Path
+
+log = logging.getLogger("ibvap.config")
+
+# Repo-root-relative, not cwd-relative: the demo, the API server and the
+# scripts/ tools are all launched from different working directories, and a
+# bare Path("models/...") resolves against whichever one is current.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+DETECTION_WEIGHTS_DEFAULT = _REPO_ROOT / "models" / "weights" / "detection.pt"
+PLATE_WEIGHTS_DEFAULT = _REPO_ROOT / "models" / "weights" / "plate.pt"
+
+
+@lru_cache(maxsize=None)
+def _resolve_model_path(env_var: str, fine_tuned: Path, stock_fallback, label: str):
+    """Pick the weights: env override -> fine-tuned on disk -> stock fallback.
+
+    The fallback is never silent. Before this, `main.py demo` and the API
+    server defaulted to stock COCO while web_demo.py loaded the fine-tuned
+    weights by hand, so the same repo demoed two different models and
+    nothing on screen said which. Cached so the choice is logged once per
+    process rather than once per config object.
+    """
+    override = os.environ.get(env_var)
+    if override:
+        log.info("%s: env override %s -> %s", label, env_var, override)
+        return override
+    if override == "":
+        # Set-but-empty is deliberate, and distinct from unset: it forces the
+        # stock/no-model baseline so the fine-tuned side can be A/B'd against
+        # it without moving the weights out of the way.
+        log.info("%s: %s set empty -> forcing baseline %r",
+                 label, env_var, stock_fallback)
+        return stock_fallback
+
+    if fine_tuned.exists():
+        log.info("%s: fine-tuned weights %s", label, fine_tuned)
+        return str(fine_tuned)
+
+    log.warning(
+        "%s: fine-tuned weights missing at %s - falling back to %r. "
+        "Expect degraded accuracy. Restore models/weights/ or set %s.",
+        label, fine_tuned, stock_fallback, env_var,
+    )
+    return stock_fallback
+
+
+def _resolve_detection_conf() -> float:
+    """Confidence follows the weights, because the right cutoff differs.
+
+    Swept with scripts/evaluate.py threshold, the IDD model's F1 peaks at
+    0.25; 0.45 was picked against stock COCO and costs the fine-tuned model
+    5.5 points of recall, which a border post pays for in missed intruders.
+    Defaulting the model without defaulting the threshold would just trade
+    one entry-point mismatch for another (web_demo.py:150 does the same).
+    """
+    override = os.environ.get("IBVAP_DETECTION_CONF")
+    if override:
+        return float(override)
+    fine_tuned = _resolve_model_path(
+        "IBVAP_DETECTION_MODEL", DETECTION_WEIGHTS_DEFAULT, "yolov8n.pt", "Detector"
+    ) != "yolov8n.pt"
+    return 0.25 if fine_tuned else 0.45
 
 
 @dataclass
 class DetectionConfig:
     """Object detection settings.
 
-    `model_path` defaults to stock YOLOv8-nano. Point IBVAP_DETECTION_MODEL
-    at a fine-tuned checkpoint to swap it without a code change, which is
-    what makes a live stock-vs-fine-tuned A/B possible (ROADMAP §5.2):
-        IBVAP_DETECTION_MODEL=runs/detect/ibvap_detection/weights/best.pt
+    `model_path` prefers the IDD fine-tuned weights in models/weights/ and
+    falls back to stock YOLOv8-nano with a warning. Point
+    IBVAP_DETECTION_MODEL at any checkpoint to override, which is what
+    makes a live stock-vs-fine-tuned A/B possible (ROADMAP §5.2):
+        IBVAP_DETECTION_MODEL=yolov8n.pt python main.py demo
     """
-    model_path: str = field(
-        default_factory=lambda: os.environ.get("IBVAP_DETECTION_MODEL", "yolov8n.pt")
-    )
-    # 0.45 was chosen against stock COCO weights. Swept against the
-    # IDD-fine-tuned model (scripts/evaluate.py threshold), F1 peaks at
-    # 0.25 — 0.45 costs 5.5 points of recall for precision this deployment
-    # does not need. A missed intruder is worse than a false alert at a
-    # border, so the lower cutoff is the right default once fine-tuned
-    # weights are in use. Override with IBVAP_DETECTION_CONF.
-    confidence_threshold: float = field(
-        default_factory=lambda: float(os.environ.get("IBVAP_DETECTION_CONF", "0.45"))
-    )
+    model_path: str = field(default_factory=lambda: _resolve_model_path(
+        "IBVAP_DETECTION_MODEL", DETECTION_WEIGHTS_DEFAULT, "yolov8n.pt", "Detector"
+    ))
+    # Follows the weights — 0.25 fine-tuned, 0.45 stock. See
+    # _resolve_detection_conf(). Override with IBVAP_DETECTION_CONF.
+    confidence_threshold: float = field(default_factory=_resolve_detection_conf)
     nms_threshold: float = 0.5
     input_size: Tuple[int, int] = (640, 640)
-    # Classes we care about: person=0, bicycle=1, car=2, motorcycle=3, bus=5, truck=7
+    # COCO's indices: person=0, bicycle=1, car=2, motorcycle=3, bus=5, truck=7.
+    # These are correct for stock weights and MUST stay COCO's, because
+    # EdgeDetector.load() (src/edge/detector.py) rebuilds the filter from the
+    # model's own `names` for any non-80-class checkpoint — the fine-tuned
+    # model's real order is bus=4, truck=5, autorickshaw=6, and it is adopted
+    # at load time, not configured here. Hardcoding the 7-class order instead
+    # would leave stock COCO reading index 4 as airplane and 6 as train.
     target_classes: List[int] = field(default_factory=lambda: [0, 1, 2, 3, 5, 7])
     class_names: dict = field(default_factory=lambda: {
         0: "person", 1: "bicycle", 2: "car", 3: "motorcycle",
@@ -59,11 +123,14 @@ class ANPRConfig:
     min_confidence: float = 0.6
     plate_min_area: int = 1000
     plate_max_area: int = 50000
-    # Trained single-class plate localizer. None keeps the classical
-    # contour localizer, which needs no model and no GPU (ROADMAP §3.3.4).
-    plate_model_path: Optional[str] = field(
-        default_factory=lambda: os.environ.get("IBVAP_PLATE_MODEL") or None
-    )
+    # Trained single-class plate localizer, preferred when present:
+    # measured F1 0.915 against the contour localizer's 0.194 on the 91
+    # held-out plates. Falls back to contours (no model, no GPU —
+    # ROADMAP §3.3.4) with a warning. IBVAP_PLATE_MODEL overrides; set it
+    # to an empty string to force the contour baseline for an A/B.
+    plate_model_path: Optional[str] = field(default_factory=lambda: _resolve_model_path(
+        "IBVAP_PLATE_MODEL", PLATE_WEIGHTS_DEFAULT, None, "Plate localizer"
+    ))
     plate_model_confidence: float = 0.35
     indian_plate_pattern: str = r"[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,3}\s?\d{4}"
 

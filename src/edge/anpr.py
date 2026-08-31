@@ -44,6 +44,12 @@ class ConsensusResult:
         }
 
 
+# Measured by scripts/evaluate.py localizer on the 91 held-out plate images
+# (101 instances) at IoU >= 0.5. Quoted in the fallback warnings so the cost
+# of the contour path is visible at the point it is taken.
+_CONTOUR_COST = "contour F1 0.194 vs trained 0.915"
+
+
 class ANPREngine:
     """
     Indian plate ANPR with multi-frame OCR consensus voting.
@@ -115,8 +121,16 @@ class ANPREngine:
             except Exception as e:
                 # Never fail the pipeline over this — degrade to contours.
                 print(f"[ANPR] could not load plate localizer "
-                      f"({type(e).__name__}: {e}); using contour fallback")
+                      f"({type(e).__name__}: {e}); using contour fallback "
+                      f"— {_CONTOUR_COST}")
                 self.plate_model = None
+        else:
+            # Running contours is a legitimate CPU-only configuration, but it
+            # should never be a silent one: the measured gap is most of the
+            # ANPR result, and a demo that quietly took this path looks like
+            # a broken reader rather than an unconfigured localizer.
+            print(f"[ANPR] no plate model configured; using contour "
+                  f"localizer — {_CONTOUR_COST}")
         return self
 
     def detect_plate_region(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:

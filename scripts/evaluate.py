@@ -185,6 +185,27 @@ def evaluate_detection(args):
 
 # --- anpr --------------------------------------------------------------
 
+def _write_gt_template(images_dir: Path, out_path: Path) -> int:
+    """Write {filename: ""} for every image, preserving any existing labels.
+
+    Transcribing 91 plates by hand is the real cost of this measurement, so
+    a re-run must never overwrite work already done — existing entries are
+    carried over and only new filenames are added blank.
+    """
+    existing = {}
+    if out_path.exists():
+        existing = json.loads(out_path.read_text())
+
+    names = sorted(
+        path.name for path in images_dir.iterdir()
+        if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp"}
+    )
+    template = {name: existing.get(name, "") for name in names}
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(template, indent=2, sort_keys=True))
+    return sum(1 for value in template.values() if not value)
+
+
 def _normalize_plate(text: str) -> str:
     """Compare plate strings ignoring case, spaces and hyphens."""
     return "".join(ch for ch in text.upper() if ch.isalnum())
@@ -197,7 +218,18 @@ def evaluate_anpr(args):
     if not images_dir.is_dir():
         raise SystemExit(f"Images directory not found: {images_dir}")
 
-    ground_truth = json.loads(Path(args.ground_truth).read_text())
+    gt_path = Path(args.ground_truth)
+    if not gt_path.exists():
+        written = _write_gt_template(images_dir, gt_path)
+        print(f"No ground truth at {gt_path} — wrote a template with "
+              f"{written} empty entries.\n"
+              f"Fill in the plate text for each image, then re-run this "
+              f"command to get the end-to-end number.\n"
+              f"Entries left empty are skipped, so a partial pass still "
+              f"scores — it just scores fewer images.")
+        return None
+
+    ground_truth = json.loads(gt_path.read_text())
     # Accept either {"img.jpg": "MH12AB1234"} or {"img.jpg": {"plate": "..."}}
     truth = {
         k: (v if isinstance(v, str) else v.get("plate", ""))
@@ -214,6 +246,11 @@ def evaluate_anpr(args):
     misses = []
 
     for name, expected in sorted(truth.items()):
+        if not expected:
+            # An unfilled template row. Counting it would silently deflate
+            # exact-match toward zero and make a half-labelled run look like
+            # a broken reader.
+            continue
         image_path = images_dir / name
         if not image_path.exists():
             continue
@@ -458,7 +495,9 @@ def main():
     p_anpr = sub.add_parser("anpr", help="End-to-end plate accuracy")
     p_anpr.add_argument("--images-dir", type=str, required=True)
     p_anpr.add_argument("--ground-truth", type=str, required=True,
-                        help='JSON mapping filename -> plate string')
+                        help="JSON mapping filename -> plate string. If the "
+                             "file does not exist it is created as a blank "
+                             "template to fill in, and nothing is scored.")
     p_anpr.add_argument("--plate-model", type=str, default=None,
                         help="Trained localizer; omit to score the contour fallback")
     p_anpr.add_argument("--show-misses", type=int, default=10)

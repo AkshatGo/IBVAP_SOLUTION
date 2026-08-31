@@ -2,8 +2,10 @@
 
 ROADMAP §5.2 calls for swapping in fine-tuned weights behind a config flag
 rather than a code edit. These tests pin that contract: the env vars are
-read, and the defaults stay stock so a fresh clone runs without any
-training artifacts present.
+read, the fine-tuned weights in models/weights/ are preferred when present,
+and a clone without them still runs — on stock weights, loudly, rather than
+failing. The defaults deliberately no longer stay stock: main.py and
+web_demo.py used to resolve different models from the same repo.
 """
 import importlib
 
@@ -28,9 +30,30 @@ def restore_config():
     reload_config()
 
 
-def test_detection_defaults_to_stock_yolov8n(monkeypatch):
+def test_detection_defaults_to_the_fine_tuned_weights(monkeypatch):
+    """The versioned checkpoint wins over stock without an env var set."""
     monkeypatch.delenv("IBVAP_DETECTION_MODEL", raising=False)
-    assert reload_config().DetectionConfig().model_path == "yolov8n.pt"
+    module = reload_config()
+    assert module.DETECTION_WEIGHTS_DEFAULT.exists(), "weights must be tracked"
+    assert module.DetectionConfig().model_path == str(module.DETECTION_WEIGHTS_DEFAULT)
+
+
+def test_detection_falls_back_to_stock_when_weights_are_absent(monkeypatch, tmp_path):
+    """A clone missing models/weights/ must still run, not crash."""
+    monkeypatch.delenv("IBVAP_DETECTION_MODEL", raising=False)
+    module = reload_config()
+    monkeypatch.setattr(module, "DETECTION_WEIGHTS_DEFAULT", tmp_path / "absent.pt")
+    assert module.DetectionConfig().model_path == "yolov8n.pt"
+
+
+def test_the_stock_fallback_warns(monkeypatch, tmp_path, caplog):
+    """Silence is the bug: a demo on stock weights must say so."""
+    monkeypatch.delenv("IBVAP_DETECTION_MODEL", raising=False)
+    module = reload_config()
+    monkeypatch.setattr(module, "DETECTION_WEIGHTS_DEFAULT", tmp_path / "absent.pt")
+    with caplog.at_level("WARNING", logger="ibvap.config"):
+        module.DetectionConfig()
+    assert "falling back" in caplog.text
 
 
 def test_detection_model_can_be_overridden_by_env(monkeypatch):
@@ -40,10 +63,19 @@ def test_detection_model_can_be_overridden_by_env(monkeypatch):
     assert module.CONFIG.detection.model_path.endswith("best.pt")
 
 
-def test_plate_localizer_defaults_to_none(monkeypatch):
-    """None means the contour fallback — a fresh clone needs no checkpoint."""
+def test_plate_localizer_defaults_to_the_trained_weights(monkeypatch):
+    """Contours score F1 0.194 against the trained localizer's 0.915."""
     monkeypatch.delenv("IBVAP_PLATE_MODEL", raising=False)
-    assert reload_config().ANPRConfig().plate_model_path is None
+    module = reload_config()
+    assert module.ANPRConfig().plate_model_path == str(module.PLATE_WEIGHTS_DEFAULT)
+
+
+def test_plate_localizer_falls_back_to_contours_when_absent(monkeypatch, tmp_path):
+    """None means the contour fallback — no model, no GPU, still runs."""
+    monkeypatch.delenv("IBVAP_PLATE_MODEL", raising=False)
+    module = reload_config()
+    monkeypatch.setattr(module, "PLATE_WEIGHTS_DEFAULT", tmp_path / "absent.pt")
+    assert module.ANPRConfig().plate_model_path is None
 
 
 def test_plate_localizer_can_be_overridden_by_env(monkeypatch):
@@ -51,14 +83,36 @@ def test_plate_localizer_can_be_overridden_by_env(monkeypatch):
     assert reload_config().ANPRConfig().plate_model_path.endswith("best.pt")
 
 
-def test_an_empty_env_var_is_treated_as_unset(monkeypatch):
+def test_an_empty_env_var_forces_the_baseline(monkeypatch):
+    """Set-but-empty is the A/B escape hatch, distinct from unset: it takes
+    the baseline path even though the trained weights are sitting on disk."""
     monkeypatch.setenv("IBVAP_PLATE_MODEL", "")
     assert reload_config().ANPRConfig().plate_model_path is None
 
 
-def test_detection_threshold_is_the_documented_value():
-    """0.45 is referenced by scripts/evaluate.py threshold; keep them in step."""
-    assert config_module.DetectionConfig().confidence_threshold == 0.45
+def test_an_empty_detection_env_var_forces_stock(monkeypatch):
+    monkeypatch.setenv("IBVAP_DETECTION_MODEL", "")
+    module = reload_config()
+    assert module.DetectionConfig().model_path == "yolov8n.pt"
+    assert module.DetectionConfig().confidence_threshold == 0.45
+
+
+def test_detection_threshold_follows_the_model(monkeypatch, tmp_path):
+    """0.25 is the fine-tuned model's F1 peak (scripts/evaluate.py threshold);
+    0.45 was swept against stock COCO. Defaulting the weights without
+    defaulting the cutoff would just relocate the mismatch."""
+    monkeypatch.delenv("IBVAP_DETECTION_CONF", raising=False)
+    monkeypatch.delenv("IBVAP_DETECTION_MODEL", raising=False)
+    module = reload_config()
+    assert module.DetectionConfig().confidence_threshold == 0.25
+
+    monkeypatch.setattr(module, "DETECTION_WEIGHTS_DEFAULT", tmp_path / "absent.pt")
+    assert module.DetectionConfig().confidence_threshold == 0.45
+
+
+def test_detection_threshold_can_be_overridden_by_env(monkeypatch):
+    monkeypatch.setenv("IBVAP_DETECTION_CONF", "0.6")
+    assert reload_config().DetectionConfig().confidence_threshold == 0.6
 
 
 def test_target_classes_match_the_six_trained_classes():
@@ -75,4 +129,6 @@ def test_config_round_trips_through_disk(tmp_path):
 
 def test_load_returns_defaults_when_no_file_exists(tmp_path):
     loaded = config_module.IBVAPConfig.load(str(tmp_path / "absent.json"))
-    assert loaded.detection.confidence_threshold == 0.45
+    assert loaded.detection.confidence_threshold == (
+        config_module.DetectionConfig().confidence_threshold
+    )

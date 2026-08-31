@@ -98,8 +98,17 @@ Thumbs.db
 # Project Specific
 # ============================================================
 
-# Data (large files - don't commit)
-data/
+# Data (large files - don't commit).
+# Written as data/* rather than data/ so git still descends into the tree:
+# an excluded *directory* can never have a file re-included beneath it,
+# which is why the plates_val.json negation below needs each level opened.
+data/*
+!data/anpr/
+data/anpr/*
+# The one exception: 91 plates transcribed by hand for the end-to-end OCR
+# measurement. A few KB, and the only thing under data/ that scripts/
+# cannot rebuild from the raw downloads.
+!data/anpr/plates_val.json
 datasets/
 models/pretrained/
 models/checkpoints/
@@ -144,6 +153,12 @@ docker-compose.override.yml
 *.ckpt
 *.pth
 *.pt
+# ...except the trained detector and plate localizer. They are already
+# tracked, so this rule never hid them — but an untracked one (a re-export,
+# a fresh run promoted into models/weights/) would vanish silently, and a
+# judge cloning the repo would get stock COCO with no sign anything was
+# missing. The negation makes that failure impossible rather than unlikely.
+!models/weights/*.pt
 *.onnx
 *.engine
 *.trt

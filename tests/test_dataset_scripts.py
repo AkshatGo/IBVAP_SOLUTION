@@ -5,6 +5,7 @@ hours, so a silent conversion bug is expensive: it surfaces as bad mAP,
 which looks like a model problem. The box-normalisation tests pin exact
 values for that reason.
 """
+import json
 import sys
 from pathlib import Path
 
@@ -237,3 +238,61 @@ def test_darkening_is_not_applied_to_already_dark_images(tmp_path):
 
     with pytest.raises(SystemExit):
         exdark_to_yolo.darken_split(tmp_path, fraction=1.0)
+
+
+# --- OCR ground-truth template ------------------------------------------
+#
+# The end-to-end exact-match number is the one thing the localizer A/B
+# (F1 0.194 -> 0.915) does not answer: it scores whether the box was found,
+# not whether the text was read. Measuring that needs 91 hand-transcribed
+# plates, so the template these tests guard is the artifact that manual work
+# lands in — losing it silently would mean transcribing them twice.
+
+def _seed_images(images_dir: Path, names):
+    images_dir.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        cv2.imwrite(str(images_dir / name), np.zeros((40, 80, 3), dtype=np.uint8))
+
+
+def test_template_has_one_blank_entry_per_image(tmp_path):
+    import evaluate
+
+    images = tmp_path / "images"
+    _seed_images(images, ["a.jpg", "b.png"])
+    out = tmp_path / "plates_val.json"
+
+    blanks = evaluate._write_gt_template(images, out)
+
+    assert blanks == 2
+    assert json.loads(out.read_text()) == {"a.jpg": "", "b.png": ""}
+
+
+def test_regenerating_the_template_preserves_transcribed_plates(tmp_path):
+    """The whole point: a re-run must not destroy 45 minutes of typing."""
+    import evaluate
+
+    images = tmp_path / "images"
+    _seed_images(images, ["a.jpg"])
+    out = tmp_path / "plates_val.json"
+    out.write_text(json.dumps({"a.jpg": "MH12AB1234"}))
+
+    _seed_images(images, ["b.jpg"])
+    blanks = evaluate._write_gt_template(images, out)
+
+    written = json.loads(out.read_text())
+    assert written["a.jpg"] == "MH12AB1234", "existing label was overwritten"
+    assert written["b.jpg"] == ""
+    assert blanks == 1
+
+
+def test_template_ignores_non_image_files(tmp_path):
+    import evaluate
+
+    images = tmp_path / "images"
+    _seed_images(images, ["a.jpg"])
+    (images / "notes.txt").write_text("scratch")
+    out = tmp_path / "plates_val.json"
+
+    evaluate._write_gt_template(images, out)
+
+    assert "notes.txt" not in json.loads(out.read_text())
