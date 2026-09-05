@@ -103,7 +103,11 @@ except Exception:
         motion = load_motion_detector()
         ENGINE = "Motion"
 
-ocr_reader = load_ocr()
+# EasyOCR is built on first use, NOT at import. Constructing the Reader
+# downloads its detection+recognition models and costs ~700MB of RSS; doing
+# that at module scope spends the hosted tier's whole memory budget and its
+# startup window before the first frame renders. load_ocr() is
+# @st.cache_resource, so the first caller pays once and the rest are free.
 
 # ═══════════════════════════════════════════════════
 # SESSION STATE
@@ -304,7 +308,8 @@ def detect_frame(frame):
 
 def run_ocr_on_frame(frame):
     """Run OCR on frame for plate detection."""
-    if ocr_reader is None:
+    reader = load_ocr()
+    if reader is None:
         return []
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
@@ -325,7 +330,7 @@ def run_ocr_on_frame(frame):
                     continue
                 plate_img = cv2.resize(plate_img, None, fx=2, fy=2,
                                         interpolation=cv2.INTER_CUBIC)
-                results = ocr_reader.readtext(plate_img)
+                results = reader.readtext(plate_img)
                 for (_, text, conf) in results:
                     text = text.strip().upper()
                     if conf > 0.5 and len(text) >= 4:
@@ -415,10 +420,7 @@ with st.sidebar:
         st.warning("⚠️ Using HOG fallback (no torch)")
     else:
         st.warning("⚠️ Using motion fallback (no torch, OpenCV 5+)")
-    if ocr_reader:
-        st.success("✅ EasyOCR loaded")
-    else:
-        st.info("ℹ️ OCR not available")
+    st.info("ℹ️ ANPR/OCR loads on first plate scan")
 
     st.divider()
     st.subheader("🎮 Demo Controls")
