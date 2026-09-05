@@ -1,4 +1,4 @@
-# Only libgl1 here â€” deliberately.
+# Only libgl1 here — deliberately.
 #
 # libglib2.0-0 used to be listed too (opencv-python's old libgthread
 # dependency), but Streamlit Community Cloud's current base image can't

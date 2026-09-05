@@ -1,6 +1,6 @@
 # IBVAP Deployment Guide
 
-## ðŸš€ Deploy to Streamlit Cloud (Recommended - Free)
+## 🚀 Deploy to Streamlit Cloud (Recommended - Free)
 
 ### Step 1: Go to Streamlit Cloud
 1. Open your browser
@@ -27,7 +27,7 @@
 
 ---
 
-## ðŸ–¥ï¸ Run Locally (Alternative)
+## 🖥️ Run Locally (Alternative)
 
 ### Option 1: Using the start script
 ```bash
@@ -42,7 +42,7 @@ python main.py dashboard
 
 ---
 
-## ðŸ“± Mobile Access
+## 📱 Mobile Access
 
 The web demo is mobile-responsive:
 1. Deploy to Streamlit Cloud
@@ -51,14 +51,14 @@ The web demo is mobile-responsive:
 
 ---
 
-## ðŸ”§ Troubleshooting
+## 🔧 Troubleshooting
 
 ### If deployment fails:
 1. Check if all files are pushed to GitHub
 2. Ensure `requirements.txt` exists at the repo root
 3. Ensure `web_demo.py` is in the root directory
 4. If the log shows an apt "unmet dependencies" error while processing
-   `packages.txt`, it's a Community Cloud base-image issue, not your repo â€”
+   `packages.txt`, it's a Community Cloud base-image issue, not your repo —
    trim `packages.txt` to just the apt packages you actually need (e.g.
    `libgl1`) and avoid `libglib2.0-0`, which currently fails to resolve.
 
@@ -71,7 +71,7 @@ The web demo is mobile-responsive:
 
 ---
 
-## ðŸŒ Alternative Deployment Options
+## 🌐 Alternative Deployment Options
 
 ### Render.com (Free)
 1. Go to https://render.com
@@ -88,7 +88,7 @@ The web demo is mobile-responsive:
 
 ---
 
-## ðŸ“‹ Pre-Deployment Checklist
+## 📋 Pre-Deployment Checklist
 
 - [x] GitHub repo created: `AkshatGo/IBVAP_SOLUTION`
 - [x] All code committed and pushed
