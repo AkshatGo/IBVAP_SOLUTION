@@ -180,3 +180,6 @@ runs/
 # from the .pt in seconds via scripts/export_onnx.py.
 models/onnx/
 *.log
+
+# Graphify knowledge graph — regenerate with `graphify .`
+graphify-out/
