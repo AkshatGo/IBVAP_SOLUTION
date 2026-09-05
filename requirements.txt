@@ -17,6 +17,12 @@
 # (and CascadeClassifier), which the demo's no-torch fallback path uses.
 numpy>=1.24.0
 opencv-python-headless>=4.8.0,<5.0
+# ultralytics requires bare `opencv-python` with no upper bound, so without
+# this second pin pip resolves opencv-python 5.0 alongside the headless 4.x
+# above. Both install into the same cv2/ package, and OpenCV 5 is exactly the
+# release that dropped HOGDescriptor. Pinning only the headless name is not
+# enough -- the constraint has to name the package ultralytics actually asks for.
+opencv-python<5.0
 
 # Detection — src/edge/detector.py, web_demo.py
 ultralytics>=8.0.0
