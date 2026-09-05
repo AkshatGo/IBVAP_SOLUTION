@@ -1,6 +1,6 @@
 # IBVAP Deployment Guide
 
-## 🚀 Deploy to Streamlit Cloud (Recommended - Free)
+## ðŸš€ Deploy to Streamlit Cloud (Recommended - Free)
 
 ### Step 1: Go to Streamlit Cloud
 1. Open your browser
@@ -27,24 +27,22 @@
 
 ---
 
-## 🖥️ Run Locally (Alternative)
+## ðŸ–¥ï¸ Run Locally (Alternative)
 
 ### Option 1: Using the start script
 ```bash
-cd SIH2026
-pip install -r requirements_web.txt
+pip install -r requirements.txt
 streamlit run web_demo.py
 ```
 
-### Option 2: Using the demo script
+### Option 2: Using main.py
 ```bash
-cd SIH2026
-python demo.py
+python main.py dashboard
 ```
 
 ---
 
-## 📱 Mobile Access
+## ðŸ“± Mobile Access
 
 The web demo is mobile-responsive:
 1. Deploy to Streamlit Cloud
@@ -53,12 +51,16 @@ The web demo is mobile-responsive:
 
 ---
 
-## 🔧 Troubleshooting
+## ðŸ”§ Troubleshooting
 
 ### If deployment fails:
 1. Check if all files are pushed to GitHub
-2. Ensure `requirements_web.txt` exists
+2. Ensure `requirements.txt` exists at the repo root
 3. Ensure `web_demo.py` is in the root directory
+4. If the log shows an apt "unmet dependencies" error while processing
+   `packages.txt`, it's a Community Cloud base-image issue, not your repo â€”
+   trim `packages.txt` to just the apt packages you actually need (e.g.
+   `libgl1`) and avoid `libglib2.0-0`, which currently fails to resolve.
 
 ### If the app is slow:
 - Streamlit Cloud free tier has limited resources
@@ -69,13 +71,13 @@ The web demo is mobile-responsive:
 
 ---
 
-## 🌐 Alternative Deployment Options
+## ðŸŒ Alternative Deployment Options
 
 ### Render.com (Free)
 1. Go to https://render.com
 2. Create a new "Web Service"
 3. Connect GitHub repo
-4. Set build command: `pip install -r requirements_web.txt`
+4. Set build command: `pip install -r requirements.txt`
 5. Set start command: `streamlit run web_demo.py --server.port $PORT`
 
 ### Railway.app (Free)
@@ -86,12 +88,12 @@ The web demo is mobile-responsive:
 
 ---
 
-## 📋 Pre-Deployment Checklist
+## ðŸ“‹ Pre-Deployment Checklist
 
 - [x] GitHub repo created: `AkshatGo/IBVAP_SOLUTION`
 - [x] All code committed and pushed
 - [x] `web_demo.py` in root directory
-- [x] `requirements_web.txt` exists
+- [x] `requirements.txt` exists
 - [x] `.streamlit/config.toml` exists
 - [ ] Deploy to Streamlit Cloud
 - [ ] Test the deployed app
