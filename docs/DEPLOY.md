@@ -61,6 +61,15 @@ The web demo is mobile-responsive:
    `packages.txt`, it's a Community Cloud base-image issue, not your repo —
    trim `packages.txt` to just the apt packages you actually need (e.g.
    `libgl1`) and avoid `libglib2.0-0`, which currently fails to resolve.
+5. **`packages.txt` must contain ONLY bare package names, one per line —
+   no `#` comments, no blank lines, no punctuation like apostrophes
+   anywhere in the file.** Unlike `requirements.txt` (which pip parses
+   properly), Community Cloud's apt step pipes this file's tokens straight
+   into `xargs apt-get install`: a `#` comment line gets passed as literal
+   package names ("Unable to locate package #"), and a stray `'` anywhere
+   in the file breaks `xargs`' quote parsing for the *entire* file. Put any
+   explanation of why a package is there in this doc instead, not in
+   `packages.txt` itself.
 
 ### If the app is slow:
 - Streamlit Cloud free tier has limited resources

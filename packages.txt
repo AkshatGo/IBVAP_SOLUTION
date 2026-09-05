@@ -1,12 +1,1 @@
-# Only libgl1 here — deliberately.
-#
-# libglib2.0-0 used to be listed too (opencv-python's old libgthread
-# dependency), but Streamlit Community Cloud's current base image can't
-# resolve it: it pulls in libffi7/libpcre3, which aren't installable there,
-# and apt fails the whole `packages.txt` install with "unmet dependencies"
-# before any Python package gets installed. Modern opencv-python wheels no
-# longer link against libgthread, so libgl1 (for libGL.so.1) is the only
-# system package actually needed.
-#
-# https://discuss.streamlit.io/t/streamlit-cloud-apt-deps-failing-opencv-import-errors-libgl-libgthread/121648
 libgl1
