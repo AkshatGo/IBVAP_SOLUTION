@@ -1,4 +1,4 @@
-"""
+﻿"""
 IBVAP — Intelligent Border Video Analytics Platform
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Full working dashboard with:
@@ -530,14 +530,35 @@ with col1:
             st.info("📁 Upload a video to see detection in action")
 
     else:
-        st.warning("📷 Webcam requires browser camera access.")
-        cam = cv2.VideoCapture(0)
-        if cam.isOpened():
-            ret, frame = cam.read()
-            if ret:
+        # cv2.VideoCapture(0) opens a camera device on the machine running
+        # the Streamlit *server* process, not the viewer's browser. Locally
+        # that happens to be your own webcam, which is misleading; on
+        # Streamlit Community Cloud there is no camera device at all, so it
+        # silently fails every time (cam.isOpened() is always False there).
+        # st.camera_input() is the correct approach: it captures a photo via
+        # the browser (getUserMedia) and uploads it to the backend, so it
+        # works the same way locally and once deployed.
+        snap = st.camera_input("Take a photo", label_visibility="collapsed")
+        if snap is not None:
+            file_bytes = np.frombuffer(snap.getvalue(), dtype=np.uint8)
+            frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            if frame is not None:
                 annotated, dets = detect_frame(frame)
+
+                plates = run_ocr_on_frame(frame)
+                if plates:
+                    for p in plates:
+                        cv2.rectangle(annotated, p["bbox"][:2], p["bbox"][2:], (0, 255, 0), 2)
+                        cv2.putText(annotated, p["text"], (p["bbox"][0], p["bbox"][1] - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
                 placeholder.image(annotated, channels="BGR", use_container_width=True)
-            cam.release()
+
+                persons = sum(1 for d in dets if d["class"] == "person")
+                vehicles = sum(1 for d in dets if d["class"] in ("car", "bus", "truck", "motorcycle"))
+                st.caption(f"🔍 Detected: {len(dets)} objects | Persons: {persons} | Vehicles: {vehicles} | Plates: {len(plates)}")
+        else:
+            st.info("📷 Click above to capture a photo from your camera")
 
 with col2:
     st.subheader("🚨 Alert Log")
@@ -583,3 +604,4 @@ st.divider()
 st.caption("IBVAP — Smart India Hackathon 2026 | "
            "\"Every AI-CCTV platform assumes good bandwidth, good cameras, and infinite trust. "
            "Border posts have none of those three.\"")
+
